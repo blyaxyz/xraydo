@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .access_keys import protocol_credentials
+
 FINGERPRINTS = (
     "firefox",
     "chrome",
@@ -124,7 +126,7 @@ def generate_x25519(binary: str) -> tuple[str, str]:
 def build_server_config(
     *,
     user_id: str,
-    user_name: str,
+    stats_id: str,
     listen_port: int,
     target: str,
     server_name: str,
@@ -143,7 +145,7 @@ def build_server_config(
                     "clients": [
                         {
                             "id": user_id,
-                            "email": user_name,
+                            "email": stats_id,
                             "flow": "xtls-rprx-vision",
                         }
                     ],
@@ -222,6 +224,10 @@ def configure_reality(
         raise RealityError("reality_invalid_fingerprint")
     if not 1 <= listen_port <= 65535:
         raise RealityError("reality_invalid_port")
+    access_key_id = user.get("access_key_id")
+    if not isinstance(access_key_id, str) or not access_key_id:
+        raise RealityError("reality_access_key_id_required")
+    credentials = protocol_credentials(user, "xray_reality")
     if not destination.exists():
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -236,8 +242,8 @@ def configure_reality(
     short_id = secrets.token_hex(8)
     spider_x = "/" + secrets.token_urlsafe(8)
     config = build_server_config(
-        user_id=user["credentials"]["xray_uuid"],
-        user_name=user["name"],
+        user_id=credentials["xray_uuid"],
+        stats_id=f"access-key:{access_key_id}",
         listen_port=listen_port,
         target=scan["target"],
         server_name=scan["server_name"],
@@ -253,4 +259,5 @@ def configure_reality(
         "short_id": short_id,
         "fingerprint": fingerprint,
         "spider_x": spider_x,
+        "stats_id": f"access-key:{access_key_id}",
     }

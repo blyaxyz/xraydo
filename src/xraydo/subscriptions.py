@@ -48,6 +48,15 @@ def _hysteria_pin(uri: str, configured_pin: Optional[str]) -> tuple[str, Optiona
     return uri, pin
 
 
+def _with_remark(uri: str, remark: str) -> str:
+    parsed = urllib.parse.urlsplit(uri)
+    if not parsed.scheme:
+        return uri
+    return urllib.parse.urlunsplit(
+        parsed._replace(fragment=urllib.parse.quote(remark, safe=""))
+    )
+
+
 class SubscriptionService:
     def __init__(self, store: Store) -> None:
         self.store = store
@@ -59,6 +68,7 @@ class SubscriptionService:
             raise ValueError("user_not_found")
         if not user.get("enabled", True) or user.get("subscription_state", "active") != "active":
             raise ValueError("subscription_inactive")
+        identity = {"user_id": user["id"], "remark": user["name"]}
         entries = []
         mtproto = []
         for key in data.get("access_keys", []):
@@ -73,10 +83,12 @@ class SubscriptionService:
                     pin = None
                     if protocol == "hysteria2":
                         uri, pin = _hysteria_pin(uri, endpoint.get("pin_sha256"))
+                    uri = _with_remark(uri, identity["remark"])
                     entry = {
                         "access_key_id": key["id"],
                         "node_id": node_id,
                         "protocol": protocol,
+                        "remark": identity["remark"],
                         "uri": uri,
                     }
                     if pin:
@@ -101,7 +113,7 @@ class SubscriptionService:
         plain = "\n".join(item["uri"] for item in entries)
         encoded = base64.b64encode(plain.encode()).decode() if plain else ""
         return {
-            "user_id": user_id,
+            "user_id": identity["user_id"],
             "entries": entries,
             "mtproto": mtproto,
             "plain": plain,

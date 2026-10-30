@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from .health import parse_core_version
+
 
 class CoreServiceError(ValueError):
     pass
@@ -146,5 +148,5 @@ def core_version(core: str) -> dict[str, Optional[str]]:
     result = _run(arguments, timeout=10)
     if result.returncode != 0:
         raise CoreServiceError("service_version_failed")
-    lines = (result.stdout or result.stderr).strip().splitlines()
-    return {"core": core, "binary": binary, "version": lines[0] if lines else None}
+    version = parse_core_version(core, result.stdout or result.stderr)
+    return {"core": core, "binary": binary, "version": version}

@@ -91,3 +91,15 @@ class ServiceTests(unittest.TestCase):
             version = core_version("telemt")
         self.assertEqual(version["version"], "telemt 3.5.14")
         run.assert_called_once_with(["/usr/local/bin/telemt", "--version"], timeout=10)
+
+    def test_hysteria_version_skips_ascii_banner(self) -> None:
+        output = "ASCII banner line\n\nVersion:\tv2.13.0\nBuildDate:\t2026-10-05\n"
+        with (
+            mock.patch("xraydo.services.shutil.which", return_value="/usr/local/bin/hysteria"),
+            mock.patch(
+                "xraydo.services._run",
+                return_value=completed([], stdout=output),
+            ),
+        ):
+            version = core_version("hysteria")
+        self.assertEqual(version["version"], "v2.13.0")

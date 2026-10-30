@@ -227,6 +227,16 @@ def parser() -> argparse.ArgumentParser:
     tls_rotate.add_argument("--dir", type=Path)
     tls_rotate.add_argument("--overlap-days", type=int, default=30)
     tls_rotate.add_argument("--force", action="store_true")
+    tls_sync_ip = tls_commands.add_parser("sync-ip")
+    tls_sync_ip.add_argument("--dir", type=Path)
+    tls_sync_ip.add_argument("--ip", action="append", default=[])
+    tls_backup = tls_commands.add_parser("backup")
+    tls_backup.add_argument("--dir", type=Path)
+    tls_backup.add_argument("--output", type=Path, required=True)
+    tls_backup.add_argument("--passphrase-file", type=Path, required=True)
+    tls_verify_backup = tls_commands.add_parser("verify-backup")
+    tls_verify_backup.add_argument("--input", type=Path, required=True)
+    tls_verify_backup.add_argument("--passphrase-file", type=Path, required=True)
 
     key = commands.add_parser("key", aliases=["keys"])
     key_commands = key.add_subparsers(dest="key_command", required=True)
@@ -1018,6 +1028,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 emit(
                     {"tls": status},
                     translator.get("tls.rotation", state=rotation["state"]),
+                    args.json,
+                )
+            elif args.tls_command == "sync-ip":
+                status = manager.reconcile_ips(args.ip or None)
+                emit(
+                    {"tls": status},
+                    translator.get(
+                        "tls.ip_synced",
+                        changed=str(status["ip_changed"]).lower(),
+                        ips=", ".join(status["actual_ips"]),
+                        url_updated=str(status["url_updated"]).lower(),
+                    ),
+                    args.json,
+                )
+            elif args.tls_command == "backup":
+                result = manager.backup(args.output, args.passphrase_file)
+                manifest = result["manifest"]
+                emit(
+                    {
+                        "tls_backup": {
+                            "path": result["path"],
+                            "ca_fingerprint_sha256": manifest["ca_fingerprint_sha256"],
+                            "file_count": len(manifest["files"]),
+                        }
+                    },
+                    translator.get("tls.backup_created", path=result["path"]),
+                    args.json,
+                )
+            elif args.tls_command == "verify-backup":
+                manifest = manager.verify_backup(args.input, args.passphrase_file)
+                emit(
+                    {"tls_backup": {"valid": True, "manifest": manifest}},
+                    translator.get(
+                        "tls.backup_verified", fingerprint=manifest["ca_fingerprint_sha256"]
+                    ),
                     args.json,
                 )
         elif args.command in {"key", "keys"}:

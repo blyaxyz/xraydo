@@ -69,9 +69,41 @@ must be called out explicitly under a `Breaking` subsection.
 - Fail-closed Hysteria 2 leaf-certificate pin validation during subscription
   rendering, automatic `pinSHA256` URI repair from endpoint metadata, and
   normalized TLS verification metadata in structured JSON subscriptions.
+- Managed leaf IP SAN reconciliation from explicit authoritative addresses or
+  an IP-literal subscription URL, with dual-stack preservation, atomic reissue,
+  and automatic subscription URL/QR host updates after an address change.
+- Pre-activation in-memory HTTPS probes after managed leaf issuance and renewal,
+  covering CA trust, every DNS/IP SAN, cert/key pairing, TLS, and encrypted HTTP
+  exchange, with failure-safe active-leaf preservation and AKI/SKI extensions.
+- Atomic mode-0600 encrypted TLS backups containing CA/leaf versions, keys and
+  metadata, with PBKDF2/AES-256 encryption, independent HMAC authentication,
+  protected passphrase files, manifests, and non-restoring integrity checks.
+- Dynamic URI subscription remarks derived from the current user display name,
+  so rename operations update plain/Base64/JSON output without modifying stored
+  endpoints or rotating protocol credentials.
+- Stable `access-key:<ID>` Xray client email/statistics identifiers with no
+  fallback to mutable user names, keeping counters continuous across renames.
+- Explicit subscription identity and node AccessKey payload allowlists that
+  keep notes, tags, contacts, sources, external IDs, and custom administrative
+  attributes local to the management state.
+- A single scoped credential registry for REALITY, Hysteria 2, and Telemt, with
+  fail-closed UUID/password/secret validation and removal of untracked secret
+  fallbacks from protocol generators.
 
 ### Changed
 
-- State schema is now version `8`. Existing schema `0` through `7` files
+- State schema is now version `9`. Existing schema `0` through `8` files
   migrate automatically. Legacy Xray UUIDs and endpoint credentials move to a
-  default AccessKey; users, settings, and unknown extension fields are preserved.
+  default AccessKey; persisted sync operations gain immutable owner IDs; users,
+  settings, and unknown extension fields are preserved.
+- AccessKey synchronization uses explicit immutable `owner_id`/`resource_id`
+  routing and an allowlisted payload that cannot acquire user display or
+  administrative fields accidentally.
+
+### Fixed
+
+- The standalone installer now pins the source archive that actually matches
+  its generated services, treats release data JSON as optional for older
+  payloads, and smoke-tests both status and the TLS renewer before enabling it.
+- Hysteria version reporting now extracts the `Version:` field instead of
+  returning the first line of its ASCII banner.

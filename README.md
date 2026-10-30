@@ -94,7 +94,13 @@ xraydo tls issue-self --domain subscriptions.example.com \
 xraydo tls status
 xraydo tls renew
 xraydo tls renew --force
+xraydo tls sync-ip --ip 203.0.113.20 --ip 2001:db8::20
 xraydo tls export-ca --output ./xraydo-ca.crt
+chmod 600 ./tls-backup-passphrase
+xraydo tls backup --output ./xraydo-tls.backup \
+  --passphrase-file ./tls-backup-passphrase
+xraydo tls verify-backup --input ./xraydo-tls.backup \
+  --passphrase-file ./tls-backup-passphrase
 xraydo tls import \
   --cert /path/server.crt --key /path/server.key \
   --chain /path/intermediates.crt --ca /path/trust-anchor.crt \
@@ -158,6 +164,10 @@ The REALITY command resolves and blocks non-public targets, requires a trusted
 TLS 1.3 + HTTP/2 handshake for the selected SNI, asks Xray itself to generate
 X25519 keys, and validates the generated JSON with `xray run -test` before an
 atomic replacement. Private keys are never returned in command output.
+The Xray client `email` field is an internal statistics key formatted as
+`access-key:<immutable AccessKey ID>`; it never uses the mutable display name.
+Human-readable names exist only in dynamically rendered subscription remarks,
+so renaming a user neither splits traffic counters nor changes credentials.
 `firefox` is the default uTLS ClientHello profile; it is a compatibility profile,
 not a randomly generated cryptographic fingerprint. Explicit randomizer profiles
 remain available through `--fingerprint`.
@@ -191,14 +201,34 @@ for root or `$XDG_STATE_HOME/xraydo` for an unprivileged administrator.
 Administrative contact/source/external-ID/attribute fields stay inside the
 local user record. Audit events record the actor, timestamp, object ID, action,
 and changed field names, but never the field values or subscription token.
+Client subscription rendering crosses an explicit `{user_id, remark}` identity
+boundary, while node synchronization uses an allowlist of AccessKey runtime
+fields. Notes, tags, contacts, source, external IDs, custom attributes, and
+their values are therefore excluded from both subscriptions and node payloads.
 AccessKey list/show output redacts both protocol credentials and secret-bearing
 endpoint fields unless `--show-secrets` is explicitly requested. Size limits
 use binary multipliers for `B`, `KB`, `MB`, `GB`, and `TB`; durations accept
 `s`, `m`, `h`, `d`, or `w`. Client IP observations are never included in
 normal key/usage output; `key ips` is the explicit sensitive-data command.
+
+Protocol credential ownership is explicit and fail-closed:
+
+| Protocol | AccessKey credential | Client endpoint material | Node-only material |
+| --- | --- | --- | --- |
+| VLESS REALITY | `xray_uuid` | public key, short ID, spider path, fingerprint | REALITY private key |
+| Hysteria 2 | `hysteria_password` | username, obfs password, certificate pin, URI | stats secret, TLS private key |
+| Telemt | `telemt_secret` (16 bytes) | username, derived connection secret, client links | Control API authorization |
+
+Generators validate the required UUID/password/hex secret and stop if it is
+missing or malformed. They never silently create an untracked replacement.
 Subscription content is assembled dynamically from active AccessKeys. Standard
 URI entries are available as plain text or standard Base64; Telemt links remain
 separate in JSON output. Export is atomic and always writes mode `0600`.
+Every rendered URI receives a percent-encoded fragment remark from the user's
+current display name. Renaming a user therefore updates plain, Base64, and JSON
+subscriptions immediately without rewriting stored endpoints, rotating tokens,
+or changing any protocol credential. Structured entries expose the same value
+as `remark`.
 Terminal QR codes contain only the configured HTTPS subscription URL. Tokens
 for repeated display are read from a mode-0600 file or stdin, never recovered
 from state or passed to `qrencode` as a process argument. `NO_COLOR` and
@@ -222,6 +252,15 @@ threshold. The CA SHA-256 fingerprint is printed by `tls init-ca/status`, and
 only the public CA certificate can be exported. The exporter prints a client
 trust-store installation command. QR output explicitly warns about private-CA
 trust and includes the CA fingerprint.
+
+Before a newly issued or renewed managed leaf becomes `current`, xraydo runs a
+socket-free local HTTPS probe through TLS memory BIOs for every DNS/IP SAN. The
+probe verifies the private-CA chain, hostname matching, cert/key pairing, TLS
+handshake, and encrypted HTTP request/response exchange. Probe time and hosts
+are stored in certificate metadata. A failed probe removes the candidate
+version and leaves the active leaf untouched. Issued leaf certificates include
+both Subject Key Identifier and Authority Key Identifier for strict OpenSSL
+chain validation.
 
 On systemd and OpenRC installations, `install.sh` enables the hardened
 `xraydo-tls-renew` agent. It checks hourly with five minutes of jitter, waits
@@ -257,6 +296,27 @@ the exported bundle until the configured overlap period ends; `--force` is an
 explicit emergency override. Old version directories are retained for manual
 recovery and are never deleted by rotation.
 
+`tls sync-ip` compares the managed leaf IP SAN values with an authoritative
+address list and atomically reissues the leaf only when they differ. With no
+`--ip`, it uses an IP-literal host from the configured HTTPS subscription URL;
+it never contacts a third-party IP-discovery service. URL-derived IPv4 replaces
+only IPv4 SAN values (and likewise for IPv6), preserving the other half of a
+dual-stack setup. When explicit addresses replace the IP used by the current
+subscription URL, its host is updated while its scheme, port, and path remain
+unchanged. QR output reads that URL dynamically and therefore follows the new
+address without token rotation.
+
+`tls backup` is the only TLS export that includes private keys. It packages all
+CA/leaf certificate versions, symlinks, modes, certificate metadata, and a
+SHA-256 manifest, then encrypts the tar payload with OpenSSL AES-256-CBC and
+PBKDF2-SHA256 (600,000 iterations). A separately derived HMAC-SHA256 covers the
+complete encrypted envelope, so a wrong password or modified byte is rejected
+before decryption. The backup is written atomically with mode `0600`, must live
+outside the active PKI directory, and accepts its 12+ byte password only from a
+mode-0600 file. `tls verify-backup` authenticates, decrypts, and reads the
+manifest without restoring files. Ordinary `tls export-ca` remains a
+certificate-only public export and never includes `ca.key` or `server.key`.
+
 ## Architecture / Архитектура
 
 The intended architecture has three roles: `standalone`, `master`, and `node`.
@@ -274,17 +334,19 @@ not be exposed as a remote API or assumed secure.
 
 ## Migration / Миграция
 
-The state file contains `schema_version`. Schema 8 separates access keys and
-their protocol credentials from users. Migration from schema 0 through 4 is atomic,
+The state file contains `schema_version`. Schema 9 separates access keys and
+their protocol credentials from users. Migration from schema 0 through 8 is atomic,
 preserves old Xray UUIDs and configured endpoint credentials, and adds
 idempotent per-key/per-source usage events plus a persistent per-node
-desired-state delivery queue. Unknown fields are retained. Back up
+desired-state delivery queue. Sync operations use immutable `owner_id` and
+`resource_id`; display names are never routing keys or part of the AccessKey
+payload. Unknown fields are retained. Back up
 `state.json` before upgrading.
-Version `0.1.0` supports schema `8`; no migration from 3x-ui is available yet.
+Version `0.1.0` supports schema `9`; no migration from 3x-ui is available yet.
 Never copy production secrets into the repository.
 
 Файл состояния содержит `schema_version`. Перед обновлением сохраните резервную
-копию `state.json`. Версия `0.1.0` поддерживает схему `8`; импорт из 3x-ui пока
+копию `state.json`. Версия `0.1.0` поддерживает схему `9`; импорт из 3x-ui пока
 не реализован. Не помещайте production-секреты в репозиторий.
 
 See [TODO.md](TODO.md) for the full product requirements.

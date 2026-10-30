@@ -40,8 +40,8 @@ set -Eeuo pipefail
 # This file is intentionally self-contained. It can be downloaded on its own;
 # no checkout of the repository is required.
 readonly INSTALLER_VERSION="0.2.0"
-readonly XRAYDO_REF="a8bef39d3f6038846118103afe8a8041dc423c19"
-readonly XRAYDO_ARCHIVE_SHA256="681ea0308d47d3f6546ad6125234917f7dab9fcb666cafc2bda0db5b9362a0c9"
+readonly XRAYDO_REF="ec7eedb7381645d34b6827821b781da3d406e540"
+readonly XRAYDO_ARCHIVE_SHA256="d34331f1b47e9da4779ab467f6e1b10553cdd18445f475aa14711cc9d6beec31"
 readonly XRAYDO_ARCHIVE_URL="https://github.com/blyaxyz/xraydo/archive/${XRAYDO_REF}.tar.gz"
 readonly XRAY_VERSION="v26.10.29"
 readonly HYSTERIA_VERSION="app/v2.13.0"
@@ -577,7 +577,9 @@ printf '%s\n' "$INSTALL_TEXT"
 install_exec install -d -m 0755 "$LIBRARY_DIR/xraydo/locales" "$LIBRARY_DIR/xraydo/data" "$PREFIX/bin" "$CONFIG_DIR" "$DOCUMENTATION_DIR"
 install_exec install -m 0644 "$SOURCE_DIR"/src/xraydo/*.py "$LIBRARY_DIR/xraydo/"
 install_exec install -m 0644 "$SOURCE_DIR"/src/xraydo/locales/*.json "$LIBRARY_DIR/xraydo/locales/"
-install_exec install -m 0644 "$SOURCE_DIR"/src/xraydo/data/*.json "$LIBRARY_DIR/xraydo/data/"
+if compgen -G "$SOURCE_DIR/src/xraydo/data/*.json" >/dev/null; then
+    install_exec install -m 0644 "$SOURCE_DIR"/src/xraydo/data/*.json "$LIBRARY_DIR/xraydo/data/"
+fi
 install_exec install -m 0644 "$SOURCE_DIR/LICENSE" "$SOURCE_DIR/THIRD_PARTY_NOTICES.md" "$DOCUMENTATION_DIR/"
 
 wrapper_path="$TEMP_DIR/xraydo-wrapper"
@@ -810,6 +812,9 @@ EOF
         root_exec install -m 0755 "$service" /etc/init.d/xraydo-tls-renew
     fi
 }
+
+XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" --json status >/dev/null
+XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" tls renew-daemon --once >/dev/null
 
 if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     [[ ",$CORES," == *,xray,* ]] && provision_core_service xray "$PREFIX/bin/xray" "run -config $CONFIG_DIR/cores/xray/config.json" config.json

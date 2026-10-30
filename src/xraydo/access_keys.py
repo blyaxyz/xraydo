@@ -11,6 +11,52 @@ from .store import Store
 from .sync_queue import enqueue_access_key
 
 
+PROTOCOL_CREDENTIAL_SCHEMA = {
+    "xray_reality": {
+        "access_key_fields": ("xray_uuid",),
+        "client_endpoint_fields": ("public_key", "short_id", "spider_x", "fingerprint"),
+        "node_only_fields": ("reality_private_key",),
+    },
+    "hysteria2": {
+        "access_key_fields": ("hysteria_password",),
+        "client_endpoint_fields": ("username", "obfs_password", "pin_sha256", "uri"),
+        "node_only_fields": ("stats_secret", "tls_private_key"),
+    },
+    "telemt": {
+        "access_key_fields": ("telemt_secret",),
+        "client_endpoint_fields": ("username", "connection_secret", "tg_uri", "https_uri"),
+        "node_only_fields": ("api_auth_header",),
+    },
+}
+
+
+def protocol_credentials(key: dict[str, Any], protocol: str) -> dict[str, str]:
+    schema = PROTOCOL_CREDENTIAL_SCHEMA.get(protocol)
+    if schema is None:
+        raise ValueError("access_key_unknown_protocol")
+    credentials = key.get("credentials")
+    if not isinstance(credentials, dict):
+        raise ValueError("access_key_invalid_credentials")
+    selected = {}
+    for field in schema["access_key_fields"]:
+        value = credentials.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError("access_key_invalid_credentials")
+        selected[field] = value
+    try:
+        if protocol == "xray_reality":
+            uuid.UUID(selected["xray_uuid"])
+        elif protocol == "hysteria2" and not 8 <= len(selected["hysteria_password"]) <= 256:
+            raise ValueError
+        elif protocol == "telemt" and re.fullmatch(
+            r"[0-9a-fA-F]{32}", selected["telemt_secret"]
+        ) is None:
+            raise ValueError
+    except (ValueError, AttributeError) as error:
+        raise ValueError("access_key_invalid_credentials") from error
+    return selected
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

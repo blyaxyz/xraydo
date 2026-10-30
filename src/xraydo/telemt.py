@@ -15,6 +15,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
+from .access_keys import protocol_credentials
+
 from .reality import profile_target, scan_target
 
 
@@ -242,7 +244,7 @@ def configure_telemt(
             raise TelemtError("telemt_api_port_busy")
     selected_domain, target_report = select_tls_domain(tls_domain)
     username = "u_" + user["id"].replace("-", "")[:16]
-    user_secret = user.get("credentials", {}).get("telemt_secret") or secrets.token_hex(16)
+    user_secret = protocol_credentials(user, "telemt")["telemt_secret"]
     api_secret = secrets.token_urlsafe(32)
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
     os.chmod(data_dir, 0o750)

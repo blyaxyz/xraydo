@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from xraydo.access_keys import AccessKeyService
 from xraydo.nodes import NodeService
 from xraydo.store import Store
 from xraydo.sync_queue import SyncQueueService, public_operation
@@ -45,6 +47,25 @@ class SyncQueueTests(unittest.TestCase):
         self.nodes.set_enabled(node["id"], False)
         UserService(self.store).create("alice")
         self.assertEqual(self.queue.list(node["id"]), [])
+
+    def test_rename_never_becomes_a_sync_identity_or_payload_field(self) -> None:
+        node = self.nodes.create("edge")
+        users = UserService(self.store)
+        user, _token = users.create("alice")
+        keys = AccessKeyService(self.store)
+        key = keys.default_for_user(user["id"])
+        users.rename("alice", "bob")
+        keys.set_state(key["id"], "disabled", "manual")
+
+        operations = self.queue.list(node["id"])
+        self.assertEqual(len(operations), 2)
+        for operation in operations:
+            self.assertEqual(operation["owner_id"], user["id"])
+            self.assertEqual(operation["resource_id"], key["id"])
+            self.assertEqual(operation["payload"]["user_id"], user["id"])
+            serialized = json.dumps(operation)
+            self.assertNotIn("alice", serialized)
+            self.assertNotIn("bob", serialized)
 
     def test_new_node_receives_existing_access_keys(self) -> None:
         UserService(self.store).create("alice")

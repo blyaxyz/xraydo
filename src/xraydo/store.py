@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 
 def configured_role() -> str:
@@ -212,6 +212,22 @@ class Store:
                 user.setdefault("subscription_state", "active" if has_credential else "revoked")
             data["schema_version"] = 8
             version = 8
+            changed = True
+        if version == 8:
+            keys_by_id = {
+                item.get("id"): item for item in data.setdefault("access_keys", [])
+            }
+            for operation in data.setdefault("node_operations", []):
+                if operation.get("resource_type") != "access_key":
+                    continue
+                payload = operation.get("payload") or {}
+                key = keys_by_id.get(operation.get("resource_id")) or {}
+                owner_id = payload.get("user_id") or key.get("user_id")
+                if not isinstance(owner_id, str) or not owner_id:
+                    raise RuntimeError("invalid access key sync owner")
+                operation["owner_id"] = owner_id
+            data["schema_version"] = 9
+            version = 9
             changed = True
         if "audit_log" not in data:
             data["audit_log"] = []

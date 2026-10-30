@@ -4,13 +4,16 @@ import json
 import base64
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from xraydo.access_keys import AccessKeyService
+from xraydo.nodes import NodeService
 from xraydo.store import Store
 from xraydo.subscriptions import SubscriptionService
+from xraydo.sync_queue import SyncQueueService
 from xraydo.users import UserService
 
 
@@ -135,6 +138,70 @@ class SubscriptionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "subscription_tls_pin_invalid"):
             self.subscriptions.build(self.user["id"])
+
+    def test_rename_updates_subscription_remark_without_changing_credentials(self) -> None:
+        key = self.keys.default_for_user(self.user["id"])
+        credentials_before = json.loads(json.dumps(key["credentials"]))
+        stored_uri = (
+            "hysteria2://secret@example.test:443/?sni=example.test&pinSHA256="
+            + "ab" * 32
+            + "#alice"
+        )
+        self.keys.set_endpoint(
+            key["id"],
+            "hysteria2",
+            {"uri": stored_uri, "pin_sha256": "ab" * 32},
+        )
+
+        renamed = self.users.rename("alice", "Bob Phone")
+        built = self.subscriptions.build(renamed["id"])
+        entry = built["entries"][0]
+        self.assertEqual(entry["remark"], "Bob Phone")
+        self.assertEqual(urllib.parse.unquote(urllib.parse.urlsplit(entry["uri"]).fragment), "Bob Phone")
+        self.assertIn("pinSHA256=" + "ab" * 32, entry["uri"])
+
+        state = self.store.load()
+        stored_key = next(item for item in state["access_keys"] if item["id"] == key["id"])
+        self.assertEqual(stored_key["credentials"], credentials_before)
+        self.assertEqual(stored_key["endpoints"]["hysteria2"]["uri"], stored_uri)
+
+    def test_admin_metadata_never_reaches_subscription_or_node_payload(self) -> None:
+        private_values = [
+            "private-note-7f2a",
+            "private-tag-8c3b",
+            "contact-9d4c@example.test",
+            "private-source-a5e1",
+            "external-b6f2",
+            "attribute-c7a3",
+        ]
+        self.users.set_metadata(
+            self.user["id"],
+            note=private_values[0],
+            tags=[private_values[1]],
+            actor="privacy-test",
+        )
+        self.users.set_admin_metadata(
+            self.user["id"],
+            contact=private_values[2],
+            source=private_values[3],
+            external_id=private_values[4],
+            attributes={"internal": private_values[5]},
+            actor="privacy-test",
+        )
+        key = self.keys.default_for_user(self.user["id"])
+        self.keys.set_endpoint(
+            key["id"],
+            "hysteria2",
+            {"uri": "hysteria2://credential@example.test:443"},
+        )
+        node = NodeService(self.store).create("edge")
+
+        subscription = json.dumps(self.subscriptions.build(self.user["id"]))
+        operations = SyncQueueService(self.store).list(node["id"])
+        synchronized = json.dumps([item["payload"] for item in operations])
+        for value in private_values:
+            self.assertNotIn(value, subscription)
+            self.assertNotIn(value, synchronized)
 
     def test_export_is_atomic_private_and_revoke_blocks_render(self) -> None:
         key = self.keys.default_for_user(self.user["id"])

@@ -13,6 +13,16 @@ CORE_CONFIGS = {
 }
 
 
+def parse_core_version(core: str, output: str) -> Optional[str]:
+    lines = output.strip().splitlines()
+    if core == "hysteria":
+        for line in lines:
+            label, separator, value = line.partition(":")
+            if separator and label.strip() == "Version" and value.strip():
+                return value.strip()
+    return lines[0] if lines else None
+
+
 def _run(arguments: list[str]) -> Optional[subprocess.CompletedProcess[str]]:
     try:
         return subprocess.run(
@@ -31,8 +41,7 @@ def _version(core: str, binary: str) -> Optional[str]:
     result = _run(arguments)
     if result is None or result.returncode != 0:
         return None
-    output = (result.stdout or result.stderr).strip().splitlines()
-    return output[0] if output else None
+    return parse_core_version(core, result.stdout or result.stderr)
 
 
 def _service_state(core: str) -> str:

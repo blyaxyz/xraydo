@@ -8,6 +8,22 @@ from typing import Any, Optional
 from .store import Store
 
 
+ACCESS_KEY_SYNC_FIELDS = (
+    "id",
+    "user_id",
+    "device_name",
+    "state",
+    "disabled_reason",
+    "credentials",
+    "endpoints",
+    "quota",
+    "validity",
+    "created_at",
+    "updated_at",
+    "last_connected_at",
+)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -19,8 +35,17 @@ def enqueue_access_key(
     node_ids: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """Add one immutable desired-state operation for every enabled node."""
+    owner_id = key.get("user_id")
+    resource_id = key.get("id")
+    if not isinstance(owner_id, str) or not owner_id or not isinstance(resource_id, str):
+        raise ValueError("sync_invalid_identity")
     timestamp = _now()
     operations = data.setdefault("node_operations", [])
+    payload = {
+        field: copy.deepcopy(key[field])
+        for field in ACCESS_KEY_SYNC_FIELDS
+        if field in key
+    }
     created = []
     for node in data.get("nodes", []):
         if not node.get("enabled", True) or (node_ids is not None and node["id"] not in node_ids):
@@ -29,10 +54,11 @@ def enqueue_access_key(
             "id": str(uuid.uuid4()),
             "node_id": node["id"],
             "resource_type": "access_key",
-            "resource_id": key["id"],
+            "resource_id": resource_id,
+            "owner_id": owner_id,
             "action": action,
             "revision": key["updated_at"],
-            "payload": copy.deepcopy(key),
+            "payload": copy.deepcopy(payload),
             "state": "pending",
             "attempts": 0,
             "last_error": None,

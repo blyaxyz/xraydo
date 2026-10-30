@@ -72,7 +72,11 @@ class TelemtTests(unittest.TestCase):
                     binary="telemt",
                     destination=root / "telemt.toml",
                     data_dir=root / "runtime",
-                    user={"id": "11111111-1111-4111-8111-111111111111", "name": "alice"},
+                    user={
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "name": "alice",
+                        "credentials": {"telemt_secret": "34" * 16},
+                    },
                     public_host="proxy.example.com",
                     mode="secure",
                 )

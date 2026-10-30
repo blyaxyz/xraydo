@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -9,7 +10,10 @@ import random
 import shutil
 import ssl
 import subprocess
+import tarfile
+import tempfile
 import time
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +21,10 @@ from typing import Any, Optional
 
 from .store import Store
 from .subscription_server import tls_context
+
+
+_BACKUP_MAGIC = b"XRAYDO-TLS-BACKUP\x00\x01"
+_BACKUP_ITERATIONS = 600_000
 
 
 def _now() -> datetime:
@@ -33,6 +41,127 @@ def _run(arguments: list[str]) -> bytes:
     if result.returncode != 0:
         raise ValueError("tls_tool_failed")
     return result.stdout
+
+
+def _backup_passphrase(path: Path) -> bytes:
+    path = path.expanduser().resolve()
+    try:
+        mode = path.stat().st_mode
+        if not path.is_file() or mode & 0o077:
+            raise ValueError("tls_backup_passphrase_permissions")
+        value = path.read_bytes().rstrip(b"\r\n")
+    except ValueError:
+        raise
+    except OSError as error:
+        raise ValueError("tls_backup_passphrase_unreadable") from error
+    if not 12 <= len(value) <= 4096:
+        raise ValueError("tls_backup_passphrase_invalid")
+    return value
+
+
+def _openssl_backup_cipher(
+    source: Path, destination: Path, passphrase: bytes, decrypt: bool = False
+) -> None:
+    arguments = [
+        "openssl",
+        "enc",
+        "-aes-256-cbc",
+        "-pbkdf2",
+        "-iter",
+        str(_BACKUP_ITERATIONS),
+        "-md",
+        "sha256",
+        "-pass",
+        "stdin",
+        "-in",
+        str(source),
+        "-out",
+        str(destination),
+    ]
+    if decrypt:
+        arguments.insert(2, "-d")
+    try:
+        result = subprocess.run(
+            arguments,
+            input=passphrase + b"\n",
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("tls_backup_crypto_failed") from error
+    if result.returncode != 0:
+        raise ValueError("tls_backup_crypto_failed")
+
+
+def _transfer_tls(source: ssl.MemoryBIO, destination: ssl.MemoryBIO) -> bool:
+    transferred = False
+    while True:
+        chunk = source.read()
+        if not chunk:
+            return transferred
+        destination.write(chunk)
+        transferred = True
+
+
+def _local_https_probe(cert: Path, key: Path, ca_cert: Path, host: str) -> None:
+    try:
+        server_context = tls_context(cert, key, host)
+        client_context = ssl.create_default_context(cafile=str(ca_cert))
+        client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        client_in = ssl.MemoryBIO()
+        client_out = ssl.MemoryBIO()
+        server_in = ssl.MemoryBIO()
+        server_out = ssl.MemoryBIO()
+        client = client_context.wrap_bio(
+            client_in, client_out, server_side=False, server_hostname=host
+        )
+        server = server_context.wrap_bio(server_in, server_out, server_side=True)
+        client_done = False
+        server_done = False
+        for _attempt in range(100):
+            progressed = False
+            if not client_done:
+                try:
+                    client.do_handshake()
+                    client_done = True
+                    progressed = True
+                except ssl.SSLWantReadError:
+                    pass
+            if _transfer_tls(client_out, server_in):
+                progressed = True
+            if not server_done:
+                try:
+                    server.do_handshake()
+                    server_done = True
+                    progressed = True
+                except ssl.SSLWantReadError:
+                    pass
+            if _transfer_tls(server_out, client_in):
+                progressed = True
+            if client_done and server_done:
+                break
+            if not progressed:
+                raise ValueError("tls_local_probe_failed")
+        else:
+            raise ValueError("tls_local_probe_failed")
+
+        request = b"GET /healthz HTTP/1.1\r\nHost: local-probe\r\nConnection: close\r\n\r\n"
+        if client.write(request) != len(request):
+            raise ValueError("tls_local_probe_failed")
+        _transfer_tls(client_out, server_in)
+        if server.read(len(request)) != request:
+            raise ValueError("tls_local_probe_failed")
+        response = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+        if server.write(response) != len(response):
+            raise ValueError("tls_local_probe_failed")
+        _transfer_tls(server_out, client_in)
+        if client.read(len(response)) != response:
+            raise ValueError("tls_local_probe_failed")
+    except (OSError, ssl.SSLError) as error:
+        raise ValueError("tls_local_probe_failed") from error
+    except ValueError:
+        raise
 
 
 def _switch_link(parent: Path, name: str, target: Path) -> None:
@@ -145,11 +274,14 @@ authorityKeyIdentifier = keyid:always
         alt_lines.extend(f"DNS.{index} = {value}" for index, value in enumerate(normalized_domains, 1))
         alt_lines.extend(f"IP.{index} = {value}" for index, value in enumerate(normalized_ips, 1))
         config.write_text(
-            "[req]\nprompt = no\ndistinguished_name = dn\nreq_extensions = v3_server\n"
+            "[req]\nprompt = no\ndistinguished_name = dn\n"
             f"[dn]\nCN = {common_name}\n"
             "[v3_server]\nbasicConstraints = critical, CA:false\n"
             "keyUsage = critical, digitalSignature, keyEncipherment\n"
-            "extendedKeyUsage = serverAuth\nsubjectAltName = @alt_names\n"
+            "extendedKeyUsage = serverAuth\n"
+            "subjectKeyIdentifier = hash\n"
+            "authorityKeyIdentifier = keyid,issuer\n"
+            "subjectAltName = @alt_names\n"
             "[alt_names]\n" + "\n".join(alt_lines) + "\n",
             encoding="utf-8",
         )
@@ -170,6 +302,7 @@ authorityKeyIdentifier = keyid:always
             os.chmod(cert, 0o644)
             for name in normalized_domains + normalized_ips:
                 tls_context(cert, key, name)
+                _local_https_probe(cert, key, ca_cert, name)
             metadata = {
                 "managed": True,
                 "source": "private-ca",
@@ -182,6 +315,8 @@ authorityKeyIdentifier = keyid:always
                 ).isoformat(),
                 "days": days,
                 "renew_percent": renew_percent,
+                "local_https_probe_at": _now().isoformat(),
+                "local_https_probe_hosts": normalized_domains + normalized_ips,
             }
             (version / "metadata.json").write_text(
                 json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -244,6 +379,86 @@ authorityKeyIdentifier = keyid:always
             renew_percent=int(metadata.get("renew_percent", 67)),
         )
         return {**renewed, "renewed": True}
+
+    def reconcile_ips(self, actual_ips: Optional[list[str]] = None) -> dict[str, Any]:
+        data = self.store.load()
+        base_url = data["settings"].get("subscription_base_url")
+        inferred_from_url = not actual_ips
+        if not actual_ips:
+            hostname = urllib.parse.urlsplit(base_url).hostname if base_url else None
+            try:
+                actual_ips = [str(ipaddress.ip_address(hostname))] if hostname else []
+            except ValueError:
+                actual_ips = []
+        if not actual_ips:
+            raise ValueError("tls_ip_source_required")
+        try:
+            normalized = sorted({str(ipaddress.ip_address(value)) for value in actual_ips})
+        except ValueError as error:
+            raise ValueError("tls_invalid_san") from error
+
+        status = self.status()
+        metadata = status.get("metadata")
+        if not metadata:
+            raise ValueError("tls_leaf_missing")
+        if metadata.get("managed") is False:
+            raise ValueError("tls_ip_sync_requires_managed_leaf")
+        previous = sorted(metadata.get("ips", []))
+        if inferred_from_url:
+            url_address = ipaddress.ip_address(normalized[0])
+            normalized = sorted(
+                {
+                    *(
+                        value
+                        for value in previous
+                        if ipaddress.ip_address(value).version != url_address.version
+                    ),
+                    str(url_address),
+                }
+            )
+        if previous == normalized:
+            return {
+                **status,
+                "ip_changed": False,
+                "previous_ips": previous,
+                "actual_ips": normalized,
+                "url_updated": False,
+            }
+
+        self.issue(
+            domains=metadata["domains"],
+            ips=normalized,
+            days=int(metadata["days"]),
+            renew_percent=int(metadata.get("renew_percent", 67)),
+        )
+        url_updated = False
+        data = self.store.load()
+        base_url = data["settings"].get("subscription_base_url")
+        if base_url:
+            parsed = urllib.parse.urlsplit(base_url)
+            try:
+                old_address = ipaddress.ip_address(parsed.hostname or "")
+            except ValueError:
+                old_address = None
+            if old_address and str(old_address) in previous and str(old_address) not in normalized:
+                addresses = [ipaddress.ip_address(value) for value in normalized]
+                candidates = [item for item in addresses if item.version == old_address.version]
+                replacement = candidates[0] if candidates else addresses[0]
+                host = f"[{replacement}]" if replacement.version == 6 else str(replacement)
+                if parsed.port is not None:
+                    host += f":{parsed.port}"
+                data["settings"]["subscription_base_url"] = urllib.parse.urlunsplit(
+                    parsed._replace(netloc=host)
+                )
+                self.store.save(data)
+                url_updated = True
+        return {
+            **self.status(),
+            "ip_changed": True,
+            "previous_ips": previous,
+            "actual_ips": normalized,
+            "url_updated": url_updated,
+        }
 
     def import_leaf(
         self,
@@ -478,6 +693,156 @@ authorityKeyIdentifier = keyid:always
         os.chmod(temporary, 0o644)
         os.replace(temporary, destination)
         return destination
+
+    def _backup_manifest(self) -> dict[str, Any]:
+        files = []
+        for path in sorted(self.root.rglob("*")):
+            relative = path.relative_to(self.root).as_posix()
+            stat = path.lstat()
+            record: dict[str, Any] = {
+                "path": relative,
+                "mode": oct(stat.st_mode & 0o777),
+            }
+            if path.is_symlink():
+                record.update({"type": "symlink", "target": os.readlink(path)})
+            elif path.is_file():
+                record.update(
+                    {
+                        "type": "file",
+                        "size": stat.st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+            elif path.is_dir():
+                record["type"] = "directory"
+            else:
+                raise ValueError("tls_backup_unsupported_file")
+            files.append(record)
+        status = self.status()
+        return {
+            "format": "xraydo-tls-backup-v1",
+            "created_at": _now().isoformat(),
+            "encrypted": True,
+            "contains_private_keys": True,
+            "ca_fingerprint_sha256": status["ca_fingerprint_sha256"],
+            "ca_rotation": status.get("ca_rotation"),
+            "leaf_metadata": status.get("metadata"),
+            "files": files,
+        }
+
+    def backup(self, destination: Path, passphrase_file: Path) -> dict[str, Any]:
+        if not self.status()["ca_ready"]:
+            raise ValueError("tls_ca_missing")
+        passphrase = _backup_passphrase(passphrase_file)
+        destination = destination.expanduser().resolve()
+        if destination == self.root or self.root in destination.parents:
+            raise ValueError("tls_backup_destination_inside_pki")
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        manifest = self._backup_manifest()
+        with tempfile.TemporaryDirectory(prefix="xraydo-tls-backup-") as directory:
+            workspace = Path(directory)
+            archive_path = workspace / "backup.tar"
+            manifest_path = workspace / "manifest.json"
+            cipher_path = workspace / "backup.enc"
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(manifest_path, 0o600)
+            with tarfile.open(archive_path, "w") as archive:
+                archive.add(manifest_path, arcname="manifest.json", recursive=False)
+                for path in sorted(self.root.rglob("*")):
+                    archive.add(
+                        path,
+                        arcname="tls/" + path.relative_to(self.root).as_posix(),
+                        recursive=False,
+                    )
+            os.chmod(archive_path, 0o600)
+            _openssl_backup_cipher(archive_path, cipher_path, passphrase)
+            ciphertext = cipher_path.read_bytes()
+            authentication_salt = os.urandom(16)
+            authentication_key = hashlib.pbkdf2_hmac(
+                "sha256",
+                passphrase,
+                b"xraydo-tls-backup-auth\x00" + authentication_salt,
+                _BACKUP_ITERATIONS,
+                dklen=32,
+            )
+            tag = hmac.new(
+                authentication_key,
+                _BACKUP_MAGIC + authentication_salt + ciphertext,
+                hashlib.sha256,
+            ).digest()
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".tls-backup-", dir=destination.parent
+            )
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(_BACKUP_MAGIC)
+                    output.write(authentication_salt)
+                    output.write(tag)
+                    output.write(ciphertext)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, destination)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        return {"path": str(destination), "manifest": manifest}
+
+    def verify_backup(self, source: Path, passphrase_file: Path) -> dict[str, Any]:
+        passphrase = _backup_passphrase(passphrase_file)
+        source = source.expanduser().resolve()
+        try:
+            if not source.is_file() or source.stat().st_size > 128 * 1024 * 1024:
+                raise ValueError("tls_backup_invalid")
+            envelope = source.read_bytes()
+        except ValueError:
+            raise
+        except OSError as error:
+            raise ValueError("tls_backup_invalid") from error
+        header_size = len(_BACKUP_MAGIC) + 16 + 32
+        if len(envelope) <= header_size or not envelope.startswith(_BACKUP_MAGIC):
+            raise ValueError("tls_backup_invalid")
+        offset = len(_BACKUP_MAGIC)
+        authentication_salt = envelope[offset : offset + 16]
+        tag = envelope[offset + 16 : offset + 48]
+        ciphertext = envelope[offset + 48 :]
+        authentication_key = hashlib.pbkdf2_hmac(
+            "sha256",
+            passphrase,
+            b"xraydo-tls-backup-auth\x00" + authentication_salt,
+            _BACKUP_ITERATIONS,
+            dklen=32,
+        )
+        expected = hmac.new(
+            authentication_key,
+            _BACKUP_MAGIC + authentication_salt + ciphertext,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(tag, expected):
+            raise ValueError("tls_backup_auth_failed")
+        with tempfile.TemporaryDirectory(prefix="xraydo-tls-verify-") as directory:
+            workspace = Path(directory)
+            cipher_path = workspace / "backup.enc"
+            archive_path = workspace / "backup.tar"
+            cipher_path.write_bytes(ciphertext)
+            os.chmod(cipher_path, 0o600)
+            _openssl_backup_cipher(cipher_path, archive_path, passphrase, decrypt=True)
+            try:
+                with tarfile.open(archive_path, "r") as archive:
+                    member = archive.getmember("manifest.json")
+                    extracted = archive.extractfile(member)
+                    if extracted is None or member.size > 1024 * 1024:
+                        raise ValueError("tls_backup_invalid")
+                    manifest = json.loads(extracted.read().decode("utf-8"))
+            except (KeyError, OSError, tarfile.TarError, UnicodeError, json.JSONDecodeError) as error:
+                raise ValueError("tls_backup_invalid") from error
+        if manifest.get("format") != "xraydo-tls-backup-v1":
+            raise ValueError("tls_backup_invalid")
+        return manifest
 
     @staticmethod
     def install_command(certificate: Path) -> str:

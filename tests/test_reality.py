@@ -52,6 +52,7 @@ class RealityTests(unittest.TestCase):
                     destination=destination,
                     user={
                         "name": "alice",
+                        "access_key_id": "22222222-2222-4222-8222-222222222222",
                         "credentials": {"xray_uuid": "11111111-1111-4111-8111-111111111111"},
                     },
                     target_host="example.com",
@@ -61,9 +62,16 @@ class RealityTests(unittest.TestCase):
                 )
             config = json.loads(destination.read_text(encoding="utf-8"))
             reality = config["inbounds"][0]["streamSettings"]["realitySettings"]
+            client = config["inbounds"][0]["settings"]["clients"][0]
             self.assertEqual(reality["privateKey"], "A" * 43)
+            self.assertEqual(
+                client["email"],
+                "access-key:22222222-2222-4222-8222-222222222222",
+            )
+            self.assertNotIn("alice", json.dumps(config))
             self.assertNotIn("private_key", endpoint)
             self.assertEqual(endpoint["public_key"], "B" * 43)
+            self.assertEqual(endpoint["stats_id"], client["email"])
             self.assertEqual(destination.stat().st_mode & 0o777, 0o640)
 
     def test_invalid_generated_config_preserves_existing_file(self) -> None:
@@ -79,6 +87,7 @@ class RealityTests(unittest.TestCase):
                         destination=destination,
                         user={
                             "name": "alice",
+                            "access_key_id": "22222222-2222-4222-8222-222222222222",
                             "credentials": {"xray_uuid": "11111111-1111-4111-8111-111111111111"},
                         },
                         target_host="example.com",
@@ -87,6 +96,27 @@ class RealityTests(unittest.TestCase):
                         fingerprint="firefox",
                     )
             self.assertEqual(destination.read_text(encoding="utf-8"), "original\n")
+
+    def test_reality_refuses_mutable_name_as_stats_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "config.json"
+            destination.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(RealityError, "reality_access_key_id_required"):
+                configure_reality(
+                    binary=str(self.fake_xray(root)),
+                    destination=destination,
+                    user={
+                        "name": "alice",
+                        "credentials": {
+                            "xray_uuid": "11111111-1111-4111-8111-111111111111"
+                        },
+                    },
+                    target_host="example.com",
+                    target_port=443,
+                    listen_port=443,
+                    fingerprint="firefox",
+                )
 
     def test_private_target_is_blocked(self) -> None:
         result = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]

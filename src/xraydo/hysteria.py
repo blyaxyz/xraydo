@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from .access_keys import protocol_credentials
+
 
 class HysteriaError(ValueError):
     pass
@@ -214,7 +216,7 @@ def configure_hysteria(
         raise HysteriaError("hysteria_tls_name_mismatch")
     selected_masquerade = select_masquerade(masquerade)
     username = "u_" + user["id"].replace("-", "")[:16]
-    password = user.get("credentials", {}).get("hysteria_password") or secrets.token_urlsafe(24)
+    password = protocol_credentials(user, "hysteria2")["hysteria_password"]
     obfs_password = secrets.token_urlsafe(32) if obfs_type != "none" else None
     stats_secret = secrets.token_urlsafe(32)
     pin = certificate_pin(cert)

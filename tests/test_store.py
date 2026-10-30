@@ -16,12 +16,12 @@ class StoreTests(unittest.TestCase):
             legacy = {"settings": {"language": "ru"}, "users": [], "custom": "keep"}
             (root / "state.json").write_text(json.dumps(legacy), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertEqual(state["nodes"], [])
             self.assertTrue(state["settings"]["country_auto_flags"])
             self.assertEqual(state["custom"], "keep")
             persisted = json.loads((root / "state.json").read_text(encoding="utf-8"))
-            self.assertEqual(persisted["schema_version"], 8)
+            self.assertEqual(persisted["schema_version"], 9)
 
     def test_future_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -40,7 +40,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertEqual(state["users"][0]["id"], "preserved")
             self.assertEqual(state["users"][0]["subscription_state"], "revoked")
             self.assertEqual(state["nodes"], [])
@@ -70,7 +70,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertNotIn("credentials", state["users"][0])
             key = state["access_keys"][0]
             self.assertEqual(key["credentials"]["xray_uuid"], "xray-preserved")
@@ -90,7 +90,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertEqual(state["node_operations"], [])
             self.assertTrue(state["nodes"][0]["enabled"])
             self.assertEqual(state["nodes"][0]["connection_state"], "offline")
@@ -109,7 +109,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertEqual(state["settings"]["role"], "standalone")
             self.assertEqual(state["nodes"][0]["connection_state"], "healthy")
 
@@ -127,7 +127,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertEqual(state["ip_observations"], [])
             quota = state["access_keys"][0]["quota"]
             self.assertEqual(quota["ip_window_seconds"], 300)
@@ -154,8 +154,30 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 8)
+            self.assertEqual(state["schema_version"], 9)
             self.assertNotIn("subscription_token_hash", state["users"][0])
             credential = state["subscription_credentials"][0]
             self.assertEqual(credential["algorithm"], "sha256-legacy")
             self.assertEqual(credential["digest"], "legacy-digest")
+
+    def test_schema_eight_adds_immutable_sync_owner_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = {
+                "schema_version": 8,
+                "settings": {},
+                "users": [{"id": "user-1", "name": "alice"}],
+                "access_keys": [{"id": "key-1", "user_id": "user-1"}],
+                "nodes": [],
+                "node_operations": [
+                    {
+                        "resource_type": "access_key",
+                        "resource_id": "key-1",
+                        "payload": {"id": "key-1", "user_id": "user-1"},
+                    }
+                ],
+            }
+            (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
+            state = Store(root).load()
+            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["node_operations"][0]["owner_id"], "user-1")

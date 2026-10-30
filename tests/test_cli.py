@@ -70,7 +70,7 @@ class CliTests(unittest.TestCase):
         key["endpoints"]["hysteria2"] = {"uri": "hysteria2://secret@example.test:443"}
         state_path.write_text(json.dumps(state), encoding="utf-8")
         shown = run_cli(self.path, "subscription", "show", "alice", "--format", "plain")
-        self.assertEqual(shown.stdout, "hysteria2://secret@example.test:443\n")
+        self.assertEqual(shown.stdout, "hysteria2://secret@example.test:443#alice\n")
         updated = json.loads(
             run_cli(self.path, "--json", "subscription", "update", "alice").stdout
         )["subscription"]

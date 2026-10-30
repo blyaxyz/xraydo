@@ -36,6 +36,8 @@ output="$("$ROOT_DIR/install.sh" --answers "$answers" --dry-run --non-interactiv
 
 grep -q 'xraydo tls renew-daemon --interval 3600 --jitter 300' "$ROOT_DIR/install.sh"
 grep -q 'enable --now xraydo-tls-renew.service' "$ROOT_DIR/install.sh"
+grep -q 'compgen -G.*src/xraydo/data/\*\.json' "$ROOT_DIR/install.sh"
+grep -q 'tls renew-daemon --once' "$ROOT_DIR/install.sh"
 
 if "$ROOT_DIR/install.sh" --role invalid --dry-run --non-interactive >/dev/null 2>&1; then
     printf 'invalid role was accepted\n' >&2

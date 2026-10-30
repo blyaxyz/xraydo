@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import copy
 import tempfile
 import unittest
 from pathlib import Path
 
-from xraydo.access_keys import AccessKeyService
+from xraydo.access_keys import (
+    PROTOCOL_CREDENTIAL_SCHEMA,
+    AccessKeyService,
+    protocol_credentials,
+)
 from xraydo.store import Store
 from xraydo.users import UserService
 
@@ -33,6 +38,30 @@ class AccessKeyTests(unittest.TestCase):
             default["credentials"]["telemt_secret"],
             phone["credentials"]["telemt_secret"],
         )
+
+    def test_protocol_credential_schema_is_explicit_and_fail_closed(self) -> None:
+        key = self.keys.default_for_user(self.user["id"])
+        self.assertEqual(
+            set(PROTOCOL_CREDENTIAL_SCHEMA),
+            {"xray_reality", "hysteria2", "telemt"},
+        )
+        expected = {
+            "xray_reality": "xray_uuid",
+            "hysteria2": "hysteria_password",
+            "telemt": "telemt_secret",
+        }
+        for protocol, field in expected.items():
+            self.assertEqual(
+                PROTOCOL_CREDENTIAL_SCHEMA[protocol]["access_key_fields"],
+                (field,),
+            )
+            self.assertEqual(protocol_credentials(key, protocol), {field: key["credentials"][field]})
+            broken = copy.deepcopy(key)
+            broken["credentials"].pop(field)
+            with self.assertRaisesRegex(ValueError, "access_key_invalid_credentials"):
+                protocol_credentials(broken, protocol)
+        with self.assertRaisesRegex(ValueError, "access_key_unknown_protocol"):
+            protocol_credentials(key, "unknown")
 
     def test_disable_enable_and_irreversible_revoke_keep_reason(self) -> None:
         key = self.keys.default_for_user(self.user["id"])
