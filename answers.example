@@ -1,0 +1,8 @@
+# Non-secret answers for cloud-init and CI.
+# CLI options written after --answers override these values.
+LANGUAGE=en
+PREFIX=/usr/local
+PROFILE=quick
+ROLE=standalone
+CORES=xray,hysteria,telemt
+TLS_MODE=auto

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 SUPPORTED_LANGUAGES = ("en", "ru")
 
@@ -25,7 +25,7 @@ class Translator:
         return template.format(**values)
 
 
-def requested_language(cli_language: str | None, configured: str = "en") -> str:
+def requested_language(cli_language: Optional[str], configured: str = "en") -> str:
     candidate = cli_language or os.environ.get("XRAYDO_LANG") or configured
     return candidate if candidate in SUPPORTED_LANGUAGES else "en"
 

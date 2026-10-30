@@ -9,7 +9,7 @@ license = { text = "MIT" }
 xraydo = "xraydo.cli:main"
 
 [tool.setuptools.package-data]
-xraydo = ["locales/*.json"]
+xraydo = ["locales/*.json", "data/*.json"]
 
 [tool.ruff]
 line-length = 100

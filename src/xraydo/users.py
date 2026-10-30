@@ -1,21 +1,62 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
+import re
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
+from .access_keys import new_access_key
 from .store import Store
+from .sync_queue import enqueue_access_key
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _matches(item: dict[str, Any], reference: str) -> bool:
+    return (
+        item["id"] == reference
+        or item["name"].casefold() == reference.casefold()
+        or item.get("alias", "").casefold() == reference.casefold()
+    )
+
+
 class UserService:
     def __init__(self, store: Store) -> None:
         self.store = store
+
+    @staticmethod
+    def _actor(explicit: Optional[str] = None) -> str:
+        actor = (explicit or os.environ.get("XRAYDO_ACTOR") or os.environ.get("USER") or "local-admin").strip()
+        if not actor or len(actor) > 128 or any(ord(character) < 32 for character in actor):
+            raise ValueError("invalid_audit_actor")
+        return actor
+
+    @staticmethod
+    def _audit(
+        data: dict[str, Any],
+        *,
+        actor: str,
+        action: str,
+        user_id: str,
+        fields: list[str],
+    ) -> None:
+        data.setdefault("audit_log", []).append(
+            {
+                "id": str(uuid.uuid4()),
+                "timestamp": _now(),
+                "actor": actor,
+                "action": action,
+                "object_type": "user",
+                "object_id": user_id,
+                "fields": sorted(fields),
+            }
+        )
 
     def create(self, name: str) -> tuple[dict[str, Any], str]:
         name = name.strip()
@@ -24,7 +65,6 @@ class UserService:
         data = self.store.load()
         if any(item["name"].casefold() == name.casefold() for item in data["users"]):
             raise ValueError("duplicate_name")
-        token = secrets.token_urlsafe(32)
         timestamp = _now()
         user = {
             "id": str(uuid.uuid4()),
@@ -32,12 +72,143 @@ class UserService:
             "enabled": True,
             "created_at": timestamp,
             "updated_at": timestamp,
-            "subscription_token_hash": hashlib.sha256(token.encode()).hexdigest(),
-            "credentials": {"xray_uuid": str(uuid.uuid4())},
+            "subscription_state": "active",
         }
+        token, credential = self._new_subscription_credential(user["id"], timestamp)
         data["users"].append(user)
+        data.setdefault("subscription_credentials", []).append(credential)
+        key = new_access_key(user["id"])
+        data["access_keys"].append(key)
+        enqueue_access_key(data, key)
         self.store.save(data)
         return user, token
+
+    @staticmethod
+    def _new_subscription_credential(
+        user_id: str, timestamp: Optional[str] = None
+    ) -> tuple[str, dict[str, Any]]:
+        token = f"{user_id}.{secrets.token_urlsafe(32)}"
+        salt = secrets.token_bytes(16)
+        digest = hashlib.scrypt(
+            token.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32
+        )
+        now = timestamp or _now()
+        return token, {
+            "user_id": user_id,
+            "algorithm": "scrypt-v1",
+            "salt": salt.hex(),
+            "digest": digest.hex(),
+            "created_at": now,
+            "updated_at": now,
+            "revoked_at": None,
+        }
+
+    @staticmethod
+    def _matches_subscription_token(credential: dict[str, Any], token: str) -> bool:
+        if credential.get("revoked_at"):
+            return False
+        if credential.get("algorithm") == "sha256-legacy":
+            actual = hashlib.sha256(token.encode()).hexdigest()
+        elif credential.get("algorithm") == "scrypt-v1":
+            try:
+                salt = bytes.fromhex(credential["salt"])
+            except (KeyError, ValueError):
+                return False
+            actual = hashlib.scrypt(
+                token.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32
+            ).hex()
+        else:
+            return False
+        return hmac.compare_digest(actual, str(credential.get("digest", "")))
+
+    def verify_subscription_token(self, token: str) -> Optional[dict[str, Any]]:
+        if not token or len(token) > 256:
+            return None
+        data = self.store.load()
+        user_id, separator, _secret = token.partition(".")
+        credentials = data.get("subscription_credentials", [])
+        if separator:
+            credentials = [item for item in credentials if item["user_id"] == user_id]
+        for credential in credentials:
+            if self._matches_subscription_token(credential, token):
+                user = next(
+                    (item for item in data["users"] if item["id"] == credential["user_id"]),
+                    None,
+                )
+                if user and user.get("enabled", True) and user.get("subscription_state") == "active":
+                    return user
+        return None
+
+    def rotate_subscription(self, reference: str, actor: Optional[str] = None) -> tuple[dict[str, Any], str]:
+        return self._replace_subscription(reference, actor, "subscription.rotate")
+
+    def create_subscription(self, reference: str, actor: Optional[str] = None) -> tuple[dict[str, Any], str]:
+        data = self.store.load()
+        user = next((item for item in data["users"] if _matches(item, reference)), None)
+        if user is None:
+            raise ValueError("user_not_found")
+        active = any(
+            item["user_id"] == user["id"] and not item.get("revoked_at")
+            for item in data.get("subscription_credentials", [])
+        )
+        if active and user.get("subscription_state", "active") == "active":
+            raise ValueError("subscription_exists")
+        return self._replace_subscription(reference, actor, "subscription.create")
+
+    def _replace_subscription(
+        self, reference: str, actor: Optional[str], action: str
+    ) -> tuple[dict[str, Any], str]:
+        data = self.store.load()
+        user = next((item for item in data["users"] if _matches(item, reference)), None)
+        if user is None:
+            raise ValueError("user_not_found")
+        timestamp = _now()
+        token, credential = self._new_subscription_credential(user["id"], timestamp)
+        data["subscription_credentials"] = [
+            item for item in data.get("subscription_credentials", []) if item["user_id"] != user["id"]
+        ]
+        data["subscription_credentials"].append(credential)
+        user["subscription_state"] = "active"
+        user["updated_at"] = timestamp
+        self._audit(
+            data,
+            actor=self._actor(actor),
+            action=action,
+            user_id=user["id"],
+            fields=["subscription_token"],
+        )
+        self.store.save(data)
+        return user, token
+
+    def revoke_subscription(self, reference: str, actor: Optional[str] = None) -> dict[str, Any]:
+        data = self.store.load()
+        user = next((item for item in data["users"] if _matches(item, reference)), None)
+        if user is None:
+            raise ValueError("user_not_found")
+        timestamp = _now()
+        for credential in data.get("subscription_credentials", []):
+            if credential["user_id"] == user["id"] and not credential.get("revoked_at"):
+                credential["revoked_at"] = timestamp
+                credential["updated_at"] = timestamp
+        user["subscription_state"] = "revoked"
+        user["updated_at"] = timestamp
+        self._audit(
+            data,
+            actor=self._actor(actor),
+            action="subscription.revoke",
+            user_id=user["id"],
+            fields=["subscription_state"],
+        )
+        self.store.save(data)
+        return user
+
+    def subscription_status(self, reference: str) -> dict[str, Any]:
+        user = self.find(reference)
+        return {
+            "user_id": user["id"],
+            "state": user.get("subscription_state", "active"),
+            "enabled": user.get("enabled", True),
+        }
 
     def list(self) -> list[dict[str, Any]]:
         return list(self.store.load()["users"])
@@ -46,7 +217,7 @@ class UserService:
         matches = [
             item
             for item in self.list()
-            if item["id"] == reference or item["name"].casefold() == reference.casefold()
+            if _matches(item, reference)
         ]
         if len(matches) != 1:
             raise ValueError("user_not_found")
@@ -55,8 +226,178 @@ class UserService:
     def set_enabled(self, reference: str, enabled: bool) -> dict[str, Any]:
         data = self.store.load()
         for item in data["users"]:
-            if item["id"] == reference or item["name"].casefold() == reference.casefold():
+            if _matches(item, reference):
                 item["enabled"] = enabled
+                item["updated_at"] = _now()
+                self.store.save(data)
+                return item
+        raise ValueError("user_not_found")
+
+    def rename(self, reference: str, new_name: str) -> dict[str, Any]:
+        new_name = new_name.strip()
+        if not new_name or len(new_name) > 64 or any(ord(char) < 32 for char in new_name):
+            raise ValueError("invalid_name")
+        data = self.store.load()
+        if any(
+            item["name"].casefold() == new_name.casefold()
+            and item["id"] != reference
+            and item["name"].casefold() != reference.casefold()
+            for item in data["users"]
+        ):
+            raise ValueError("duplicate_name")
+        for item in data["users"]:
+            if _matches(item, reference):
+                if item["name"] != new_name:
+                    item.setdefault("previous_names", []).append(
+                        {"name": item["name"], "changed_at": _now()}
+                    )
+                    item["name"] = new_name
+                    item["updated_at"] = _now()
+                    self.store.save(data)
+                return item
+        raise ValueError("user_not_found")
+
+    def set_metadata(
+        self,
+        reference: str,
+        *,
+        note: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        actor: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if note is not None and len(note) > 1000:
+            raise ValueError("invalid_note")
+        if tags is not None:
+            tags = sorted({tag.strip() for tag in tags if tag.strip()})
+            if len(tags) > 32 or any(len(tag) > 64 for tag in tags):
+                raise ValueError("invalid_tags")
+        data = self.store.load()
+        for item in data["users"]:
+            if _matches(item, reference):
+                changed_fields = []
+                if note is not None:
+                    item["note"] = note
+                    changed_fields.append("note")
+                if tags is not None:
+                    item["tags"] = tags
+                    changed_fields.append("tags")
+                timestamp = _now()
+                item["updated_at"] = timestamp
+                item["metadata_updated_at"] = timestamp
+                item["metadata_updated_by"] = self._actor(actor)
+                self._audit(
+                    data,
+                    actor=item["metadata_updated_by"],
+                    action="user.metadata.update",
+                    user_id=item["id"],
+                    fields=changed_fields,
+                )
+                self.store.save(data)
+                return item
+        raise ValueError("user_not_found")
+
+    def set_admin_metadata(
+        self,
+        reference: str,
+        *,
+        contact: Optional[str] = None,
+        source: Optional[str] = None,
+        external_id: Optional[str] = None,
+        attributes: Optional[dict[str, str]] = None,
+        clear_attributes: bool = False,
+        actor: Optional[str] = None,
+    ) -> dict[str, Any]:
+        scalar_values = {"contact": contact, "source": source, "external_id": external_id}
+        if any(value is not None and len(value) > 256 for value in scalar_values.values()):
+            raise ValueError("invalid_admin_metadata")
+        if attributes is not None:
+            if len(attributes) > 32 or any(
+                not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key) or len(value) > 512
+                for key, value in attributes.items()
+            ):
+                raise ValueError("invalid_admin_metadata")
+        data = self.store.load()
+        for item in data["users"]:
+            if _matches(item, reference):
+                changed_fields = []
+                admin = item.setdefault("admin", {})
+                for field, value in scalar_values.items():
+                    if value is not None:
+                        admin[field] = value or None
+                        changed_fields.append(field)
+                if clear_attributes:
+                    admin["attributes"] = {}
+                    changed_fields.append("attributes")
+                if attributes:
+                    admin.setdefault("attributes", {}).update(attributes)
+                    changed_fields.append("attributes")
+                if not changed_fields:
+                    raise ValueError("admin_metadata_empty")
+                timestamp = _now()
+                audit_actor = self._actor(actor)
+                item["updated_at"] = timestamp
+                item["metadata_updated_at"] = timestamp
+                item["metadata_updated_by"] = audit_actor
+                self._audit(
+                    data,
+                    actor=audit_actor,
+                    action="user.admin_metadata.update",
+                    user_id=item["id"],
+                    fields=changed_fields,
+                )
+                self.store.save(data)
+                return item
+        raise ValueError("user_not_found")
+
+    def audit_log(self, limit: int = 100) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("invalid_audit_limit")
+        return list(reversed(self.store.load().get("audit_log", [])[-limit:]))
+
+    def set_alias(self, reference: str, alias: str) -> dict[str, Any]:
+        alias = alias.strip()
+        if alias and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", alias):
+            raise ValueError("invalid_alias")
+        data = self.store.load()
+        target = next(
+            (
+                item
+                for item in data["users"]
+                if _matches(item, reference)
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError("user_not_found")
+        if alias and any(
+            item["id"] != target["id"]
+            and item.get("alias", "").casefold() == alias.casefold()
+            for item in data["users"]
+        ):
+            raise ValueError("duplicate_alias")
+        target["alias"] = alias or None
+        target["updated_at"] = _now()
+        self.store.save(data)
+        return target
+
+    def search(self, query: str) -> list[dict[str, Any]]:
+        needle = query.strip().casefold()
+        if not needle:
+            return self.list()
+        matches = []
+        for item in self.list():
+            fields = [item["id"], item["name"], item.get("alias", ""), item.get("note", "")]
+            fields.extend(item.get("tags", []))
+            fields.extend(entry.get("name", "") for entry in item.get("previous_names", []))
+            if any(needle in str(field).casefold() for field in fields):
+                matches.append(item)
+        return matches
+
+    def set_endpoint(self, reference: str, protocol: str, endpoint: dict[str, Any]) -> dict[str, Any]:
+        data = self.store.load()
+        for item in data["users"]:
+            if _matches(item, reference):
+                item.setdefault("endpoints", {})[protocol] = endpoint
                 item["updated_at"] = _now()
                 self.store.save(data)
                 return item

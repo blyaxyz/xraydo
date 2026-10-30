@@ -1,16 +1,28 @@
 # Third-party notices
 
-The current `0.1.0` source tree redistributes no third-party executable or source
-component and has no runtime dependency outside Python's standard library.
+`xraydo` itself is licensed under the MIT License. The one-file installer can
+download the following independent, unmodified upstream programs directly from
+their official GitHub release pages. They remain governed by their own
+licenses; the xraydo license does not cover them.
 
-Future installers are expected to support independently distributed components.
-Before bundling or downloading them, pin an exact release, verify its checksum
-and signature where available, and update this file with the exact artifact and
-license. Candidates include:
+| Component | Pinned release | License | Upstream source |
+| --- | --- | --- | --- |
+| Xray-core | `v26.10.29` | Mozilla Public License 2.0 | <https://github.com/XTLS/Xray-core/tree/v26.10.29> |
+| Hysteria 2 | `app/v2.13.0` | MIT License, copyright 2023 Toby | <https://github.com/apernet/hysteria/tree/app/v2.13.0> |
+| Telemt | `3.5.14` | TELEMT Public License 3.3, copyright 2026 Telemt | <https://github.com/telemt/telemt/tree/3.5.14> |
 
-- Xray-core — Mozilla Public License 2.0 (verify against the pinned release).
-- Hysteria 2 — MIT License (verify against the pinned release).
-- Telemt — license must be reviewed against the exact selected upstream and
-  version before redistribution; it is intentionally not installed today.
+Exact license texts for the pinned sources:
 
-This file is not a substitute for the license text shipped by each component.
+- Xray-core: <https://github.com/XTLS/Xray-core/blob/v26.10.29/LICENSE>
+- Hysteria 2: <https://github.com/apernet/hysteria/blob/app/v2.13.0/LICENSE.md>
+- Telemt: <https://github.com/telemt/telemt/blob/3.5.14/LICENSE>
+
+The installer verifies each downloaded release artifact against a SHA-256
+value embedded for the selected architecture. It does not modify or repackage
+the upstream executables. Their names and links identify the upstream projects
+and do not imply endorsement of xraydo.
+
+If a release artifact is redistributed instead of being fetched from its
+official upstream, the redistributor must review and satisfy the corresponding
+license obligations, including preserving required license and attribution
+notices and, for Xray-core, the MPL 2.0 source-availability requirements.

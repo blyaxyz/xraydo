@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate installer
+        run: |
+          bash -n install.sh
+          ./install.sh --version
+          ./install.sh --dry-run --non-interactive
+      - name: Build commit-pinned source payload
+        run: |
+          mkdir -p "release-root/xraydo-$GITHUB_SHA"
+          git archive HEAD | tar -x -C "release-root/xraydo-$GITHUB_SHA"
+          tar -czf xraydo-source.tar.gz -C release-root "xraydo-$GITHUB_SHA"
+          payload_sha256="$(sha256sum xraydo-source.tar.gz | cut -d ' ' -f 1)"
+          sed -i "s|^readonly XRAYDO_REF=.*|readonly XRAYDO_REF=\"$GITHUB_SHA\"|" install.sh
+          sed -i "s|^readonly XRAYDO_ARCHIVE_SHA256=.*|readonly XRAYDO_ARCHIVE_SHA256=\"$payload_sha256\"|" install.sh
+          sed -i "s|^readonly XRAYDO_ARCHIVE_URL=.*|readonly XRAYDO_ARCHIVE_URL=\"https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/xraydo-source.tar.gz\"|" install.sh
+          bash -n install.sh
+      - name: Create checksums
+        run: sha256sum install.sh xraydo-source.tar.gz > SHA256SUMS
+      - name: Publish versioned installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" install.sh xraydo-source.tar.gz SHA256SUMS --generate-notes --verify-tag

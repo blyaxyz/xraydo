@@ -1,0 +1,7 @@
+[
+  {"host": "ya.ru", "port": 443},
+  {"host": "www.cloudflare.com", "port": 443},
+  {"host": "www.amazon.com", "port": 443},
+  {"host": "www.wikipedia.org", "port": 443},
+  {"host": "www.mozilla.org", "port": 443}
+]
