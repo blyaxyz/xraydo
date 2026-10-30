@@ -335,6 +335,14 @@ fi
 
 declare -a REQUIRED_PACKAGES=()
 command -v python3 >/dev/null 2>&1 || REQUIRED_PACKAGES+=(python3)
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    case "$PACKAGE_MANAGER" in
+        apt-get) REQUIRED_PACKAGES+=(python3-yaml) ;;
+        dnf|yum) REQUIRED_PACKAGES+=(python3-pyyaml) ;;
+        zypper) REQUIRED_PACKAGES+=(python3-PyYAML) ;;
+        apk) REQUIRED_PACKAGES+=(py3-yaml) ;;
+    esac
+fi
 command -v curl >/dev/null 2>&1 || REQUIRED_PACKAGES+=(curl)
 command -v tar >/dev/null 2>&1 || REQUIRED_PACKAGES+=(tar)
 if ! command -v qrencode >/dev/null 2>&1; then

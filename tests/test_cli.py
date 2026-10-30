@@ -435,3 +435,60 @@ class CliTests(unittest.TestCase):
         self.assertEqual(set(explicit["active_ips"]), {"1.1.1.1", "9.9.9.9"})
         cleared = run_cli(self.path, "--json", "key", "clear-ips", key_id)
         self.assertEqual(json.loads(cleared.stdout)["ip_usage"]["count"], 0)
+
+    def test_reality_remote_scan_is_queued_for_exact_node(self) -> None:
+        node = json.loads(
+            run_cli(self.path, "--json", "node", "add", "edge", "--alias", "edge-1").stdout
+        )["node"]
+        queued = run_cli(
+            self.path, "--json", "reality", "scan", "--node", "edge-1",
+            "--target", "example.com", "--sni", "example.com", "--xver", "1",
+        )
+        self.assertEqual(queued.returncode, 0, queued.stderr)
+        payload = json.loads(queued.stdout)
+        self.assertEqual(payload["state"], "pending_node_execution")
+        self.assertEqual(payload["operation"]["node_id"], node["id"])
+        self.assertEqual(payload["operation"]["resource_type"], "reality")
+        self.assertNotIn("payload", payload["operation"])
+        state = json.loads((self.path / "data" / "state.json").read_text())
+        operation = state["node_operations"][-1]
+        self.assertEqual(operation["payload"]["target"], "example.com")
+        self.assertEqual(operation["payload"]["xver"], 1)
+
+    def test_inbound_import_list_show_edit_history_and_bulk_plan(self) -> None:
+        config_file = self.path / "xray.json"
+        config_file.write_text(json.dumps({"inbounds": [
+            {"tag": "one", "listen": "0.0.0.0", "port": 443, "protocol": "vless",
+             "settings": {"clients": [{"id": "11111111-1111-4111-8111-111111111111", "password": "hidden"}]},
+             "streamSettings": {"network": "tcp", "security": "none"}},
+            {"tag": "two", "listen": "127.0.0.1", "port": 8443, "protocol": "http",
+             "settings": {}, "streamSettings": {"network": "tcp", "security": "none"}},
+        ]}), encoding="utf-8")
+        first = run_cli(self.path, "--json", "inbound", "import", "--file", str(config_file), "--index", "0")
+        second = run_cli(self.path, "--json", "inbound", "import", "--file", str(config_file), "--index", "1")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        first_id = json.loads(first.stdout)["inbound"]["id"]
+        second_id = json.loads(second.stdout)["inbound"]["id"]
+        shown = json.loads(run_cli(self.path, "--json", "inbound", "show", first_id).stdout)["inbound"]
+        self.assertEqual(shown["config"]["settings"]["clients"][0]["id"], "***")
+        self.assertNotIn("hidden", json.dumps(shown))
+        listed = json.loads(run_cli(
+            self.path, "--json", "inbound", "list", "--protocol", "vless", "--port", "443"
+        ).stdout)["inbounds"]
+        self.assertEqual([item["id"] for item in listed], [first_id])
+        planned = run_cli(
+            self.path, "--json", "inbound", "edit", first_id,
+            "--expected-revision", "1", "--set", "port=9443",
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertEqual(json.loads(planned.stdout)["state"], "planned")
+        bulk = run_cli(
+            self.path, "--json", "inbound", "bulk-edit",
+            "--target", f"local:{first_id}", "--target", f"local:{second_id}",
+            "--set", "sniffing.enabled=false",
+        )
+        self.assertEqual(bulk.returncode, 0, bulk.stderr)
+        self.assertTrue(json.loads(bulk.stdout)["complete"])
+        history = json.loads(run_cli(self.path, "--json", "inbound", "history", first_id).stdout)
+        self.assertEqual(history["history"][0]["revision"], 1)

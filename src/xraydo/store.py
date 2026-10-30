@@ -54,6 +54,9 @@ class Store:
             "ip_observations": [],
             "subscription_credentials": [],
             "node_operations": [],
+            "reality_checks": [],
+            "inbounds": [],
+            "inbound_versions": [],
         }
 
     @staticmethod
@@ -232,6 +235,13 @@ class Store:
         if "audit_log" not in data:
             data["audit_log"] = []
             changed = True
+        if "reality_checks" not in data:
+            data["reality_checks"] = []
+            changed = True
+        for collection in ("inbounds", "inbound_versions"):
+            if collection not in data:
+                data[collection] = []
+                changed = True
         if version != CURRENT_SCHEMA_VERSION:
             raise RuntimeError("unsupported state schema")
         return data, changed

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Terminal-first Xray management panel"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+dependencies = ["PyYAML>=6.0"]
 
 [project.scripts]
 xraydo = "xraydo.cli:main"

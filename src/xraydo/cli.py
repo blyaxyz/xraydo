@@ -5,7 +5,10 @@ import json
 import os
 import re
 import shutil
+import shlex
 import sys
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -14,13 +17,17 @@ from .access_keys import AccessKeyService
 from .countries import detect_countries, load_countries
 from .health import core_health
 from .hysteria import configure_hysteria
+from .inbounds import InboundService, apply_assignments, load_document
 from .i18n import SUPPORTED_LANGUAGES, Translator, installed_language, requested_language
 from .nodes import NodeService
-from .reality import FINGERPRINTS, configure_reality
+from .reality import (
+    FINGERPRINTS, configure_reality, discover_targets, fingerprint_profiles,
+    scan_result,
+)
 from .roles import ROLES, RoleService
 from .services import control_service, core_version, service_logs, service_status
 from .store import Store
-from .sync_queue import SyncQueueService, public_operation
+from .sync_queue import SyncQueueService, enqueue_node_operation, public_operation
 from .subscriptions import SubscriptionService
 from .subscription_server import serve_https
 from .telemt import configure_telemt
@@ -304,6 +311,118 @@ def parser() -> argparse.ArgumentParser:
     legacy.add_argument("name", nargs="?", default="default")
     commands.add_parser("status")
 
+    inbound = commands.add_parser("inbound", aliases=["inbounds"])
+    inbound_commands = inbound.add_subparsers(dest="inbound_command", required=True)
+    inbound_import = inbound_commands.add_parser("import")
+    inbound_import.add_argument("--node", default="local")
+    inbound_import.add_argument("--file", type=Path, required=True)
+    inbound_import.add_argument("--index", type=int, default=0)
+    inbound_import.add_argument("--remark")
+    inbound_import.add_argument("--id")
+    inbound_import.add_argument("--api-endpoint", help="local Xray HandlerService endpoint")
+    inbound_list = inbound_commands.add_parser("list")
+    inbound_list.add_argument("--node")
+    inbound_list.add_argument("--core")
+    inbound_list.add_argument("--protocol")
+    inbound_list.add_argument("--port", type=int)
+    inbound_list.add_argument("--state", choices=("enabled", "disabled", "deleted"))
+    inbound_list.add_argument("--remark")
+    inbound_show = inbound_commands.add_parser("show")
+    inbound_show.add_argument("inbound_id")
+    inbound_show.add_argument("--node")
+    inbound_show.add_argument("--show-secrets", action="store_true")
+    inbound_edit = inbound_commands.add_parser("edit")
+    inbound_edit.add_argument("inbound_id")
+    inbound_edit.add_argument("--node")
+    inbound_edit.add_argument("--set", action="append", default=[], dest="assignments", metavar="PATH=VALUE")
+    inbound_edit.add_argument("--raw", type=Path)
+    inbound_edit.add_argument("--editor", action="store_true")
+    inbound_edit.add_argument("--remark")
+    inbound_edit.add_argument("--expected-revision", type=int)
+    inbound_edit.add_argument("--apply", action="store_true")
+    inbound_edit.add_argument("--yes", action="store_true")
+    inbound_edit.add_argument("--config-path", type=Path)
+    inbound_edit.add_argument("--xray-binary")
+    inbound_edit.add_argument("--tls-cert", type=Path)
+    inbound_edit.add_argument("--tls-key", type=Path)
+    inbound_edit.add_argument("--tls-managed", action="store_true")
+    inbound_edit.add_argument("--tls-issue-domain", action="append", default=[])
+    inbound_edit.add_argument("--tls-issue-ip", action="append", default=[])
+    inbound_edit.add_argument("--fingerprint", choices=FINGERPRINTS)
+    inbound_clone = inbound_commands.add_parser("clone")
+    inbound_clone.add_argument("inbound_id")
+    inbound_clone.add_argument("--source-node")
+    inbound_clone.add_argument("--node", required=True)
+    inbound_clone.add_argument("--port", type=int)
+    inbound_clone.add_argument("--remark")
+    for action in ("enable", "disable", "delete", "restore"):
+        command = inbound_commands.add_parser(action)
+        command.add_argument("inbound_id")
+        command.add_argument("--node")
+        command.add_argument("--expected-revision", type=int)
+        command.add_argument("--apply", action="store_true")
+        command.add_argument("--yes", action="store_true")
+        command.add_argument("--config-path", type=Path)
+        command.add_argument("--xray-binary")
+        if action == "delete":
+            command.add_argument("--grace", type=int, default=86400)
+    inbound_history = inbound_commands.add_parser("history")
+    inbound_history.add_argument("inbound_id")
+    inbound_history.add_argument("--node")
+    inbound_rollback = inbound_commands.add_parser("rollback")
+    inbound_rollback.add_argument("inbound_id")
+    inbound_rollback.add_argument("--node")
+    inbound_rollback.add_argument("--revision", type=int, required=True)
+    inbound_rollback.add_argument("--expected-revision", type=int)
+    inbound_rollback.add_argument("--apply", action="store_true")
+    inbound_rollback.add_argument("--yes", action="store_true")
+    inbound_rollback.add_argument("--config-path", type=Path)
+    inbound_rollback.add_argument("--xray-binary")
+    inbound_bulk = inbound_commands.add_parser("bulk-edit")
+    inbound_bulk.add_argument("--target", action="append", required=True, metavar="NODE:INBOUND")
+    inbound_bulk.add_argument("--set", action="append", required=True, dest="assignments", metavar="PATH=VALUE")
+
+    reality_cli = commands.add_parser("reality", help="scan and configure REALITY targets")
+    reality_commands = reality_cli.add_subparsers(dest="reality_command", required=True)
+    reality_scan = reality_commands.add_parser("scan")
+    reality_scan.add_argument("--node", default="local")
+    reality_scan.add_argument("--target", required=True)
+    reality_scan.add_argument("--sni")
+    reality_scan.add_argument("--port", type=int, default=443)
+    reality_scan.add_argument("--xver", type=int, choices=(0, 1, 2), default=0)
+    reality_scan.add_argument("--timeout", type=float, default=10.0)
+    reality_scan.add_argument("--allow-private-single", action="store_true")
+    reality_scan.add_argument("--private-confirmation")
+    reality_discover = reality_commands.add_parser("discover")
+    reality_discover.add_argument("--node", default="local")
+    reality_discover.add_argument("--target", action="append", dest="targets", required=True)
+    reality_discover.add_argument("--sni")
+    reality_discover.add_argument("--xver", type=int, choices=(0, 1, 2), default=0)
+    reality_discover.add_argument("--timeout", type=float, default=4.0)
+    reality_discover.add_argument("--concurrency", type=int, default=32)
+    reality_discover.add_argument("--max-tasks", type=int, default=512)
+    reality_discover.add_argument("--max-cidr-addresses", type=int, default=256)
+    reality_utls = reality_commands.add_parser("utls")
+    reality_utls.add_argument("action", choices=("list",), default="list", nargs="?")
+    reality_configure = reality_commands.add_parser("configure")
+    reality_configure.add_argument("--node", default="local")
+    reality_configure.add_argument("--user", default="default")
+    reality_configure.add_argument("--access-key")
+    reality_configure.add_argument("--target")
+    reality_configure.add_argument("--sni")
+    reality_configure.add_argument("--target-port", type=int, default=443)
+    reality_configure.add_argument("--listen-port", type=int, default=443)
+    reality_configure.add_argument("--xver", type=int, choices=(0, 1, 2), default=0)
+    reality_configure.add_argument("--server", required=True, help="public address placed in subscriptions")
+    reality_configure.add_argument("--fingerprint", choices=FINGERPRINTS, default="firefox")
+    reality_configure.add_argument("--force-unverified-target", action="store_true")
+    reality_configure.add_argument("--force-confirmation")
+    reality_configure.add_argument("--allow-private-single", action="store_true")
+    reality_configure.add_argument("--private-confirmation")
+    reality_configure.add_argument("--config", type=Path)
+    reality_configure.add_argument("--interactive", action="store_true")
+    reality_configure.add_argument("--candidate", action="append", default=[])
+
     core = commands.add_parser("core")
     core_commands = core.add_subparsers(dest="core_command", required=True)
     reality = core_commands.add_parser("reality")
@@ -313,6 +432,9 @@ def parser() -> argparse.ArgumentParser:
     reality.add_argument("--target-port", type=int, default=443)
     reality.add_argument("--listen-port", type=int, default=443)
     reality.add_argument("--fingerprint", choices=FINGERPRINTS, default="firefox")
+    reality.add_argument("--sni")
+    reality.add_argument("--xver", type=int, choices=(0, 1, 2), default=0)
+    reality.add_argument("--server")
     reality.add_argument("--config", type=Path)
     hysteria = core_commands.add_parser("hysteria")
     hysteria.add_argument("--user", default="default")
@@ -543,6 +665,67 @@ def print_private_ca_warning(store: Store, translator: Translator) -> None:
     )
 
 
+def inbound_edit_document(current: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
+    if args.raw:
+        proposed = load_document(args.raw)
+    else:
+        proposed = dict(current)
+    if args.assignments:
+        proposed = apply_assignments(proposed, args.assignments)
+    if args.editor:
+        editor = os.environ.get("EDITOR")
+        if not editor:
+            raise ValueError("inbound_editor_missing")
+        descriptor, filename = tempfile.mkstemp(prefix="xraydo-inbound-", suffix=".json")
+        path = Path(filename)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(proposed, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.chmod(path, 0o600)
+            process = subprocess.run(shlex.split(editor) + [str(path)], check=False)
+            if process.returncode != 0:
+                raise ValueError("inbound_editor_failed")
+            proposed = load_document(path)
+        finally:
+            path.unlink(missing_ok=True)
+    if not args.raw and not args.assignments and not args.editor and sys.stdin.isatty():
+        fields = (
+            ("remark", None), ("listen", "listen"), ("port", "port"),
+            ("protocol", "protocol"), ("transport", "streamSettings.network"),
+            ("security", "streamSettings.security"),
+        )
+        changes = []
+        for label, path in fields:
+            if label == "remark":
+                continue
+            target: object = current
+            for part in str(path).split("."):
+                target = target.get(part, "") if isinstance(target, dict) else ""
+            entered = input(f"{label} [{target}]: ").strip()
+            if entered:
+                changes.append(f"{path}={entered}")
+        proposed = apply_assignments(proposed, changes)
+    return proposed
+
+
+def print_inbound_plan(result: dict[str, object]) -> None:
+    plan = result.get("plan", {})
+    if not isinstance(plan, dict):
+        return
+    print(f"Inbound {plan.get('node_id')}:{plan.get('inbound_id')} revision {plan.get('base_revision')}")
+    for change in plan.get("diff", []):
+        print(f"  {change['path']}: {change['old']!r} -> {change['new']!r}")
+    impact = plan.get("impact", {})
+    if isinstance(impact, dict):
+        print(
+            f"Impact: users={impact.get('users', 0)}, links={impact.get('subscription_links', 0)}, "
+            f"restart={impact.get('restart_required')}, connections_may_drop={impact.get('connections_may_drop')}"
+        )
+    for warning in plan.get("warnings", []):
+        print(f"WARNING: {warning}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser().parse_args(argv)
     store = Store()
@@ -555,6 +738,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sync_queue = SyncQueueService(store)
     roles = RoleService(store)
     subscriptions = SubscriptionService(store)
+    inbounds = InboundService(store)
     try:
         if args.command is None:
             return interactive(service, translator, subscriptions)
@@ -1216,6 +1400,271 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(translator.get("status.ready", count=count))
                 for core, health in cores.items():
                     print(translator.get("status.core", core=core, state=health["state"]))
+        elif args.command in {"inbound", "inbounds"}:
+            def inbound_node(reference: Optional[str]) -> Optional[str]:
+                if reference is None or reference in {"local", "standalone"}:
+                    return reference
+                return nodes.find(reference)["id"]
+
+            node_id = inbound_node(getattr(args, "node", None))
+            if args.inbound_command == "import":
+                document = load_document(args.file)
+                configs = document.get("inbounds") if isinstance(document.get("inbounds"), list) else [document]
+                if not 0 <= args.index < len(configs) or not isinstance(configs[args.index], dict):
+                    raise ValueError("inbound_invalid_index")
+                item = inbounds.register(node_id or "local", configs[args.index], remark=args.remark,
+                                         inbound_id=args.id, config_index=args.index if "inbounds" in document else None,
+                                         api_endpoint=args.api_endpoint)
+                emit({"inbound": item}, f"Imported inbound {item['node_id']}:{item['id']}", args.json)
+            elif args.inbound_command == "list":
+                items = inbounds.list(node_id=node_id, core=args.core, protocol=args.protocol,
+                                      port=args.port, state=args.state, remark=args.remark)
+                if args.json:
+                    emit({"inbounds": items}, "", True)
+                else:
+                    for item in items:
+                        print(f"{item['node_id']}:{item['id']}  {item['state']}  {item['protocol']}  {item['listen']}:{item['port']}  {item['remark']}")
+            elif args.inbound_command == "show":
+                item = inbounds.show(args.inbound_id, node_id, secrets=args.show_secrets)
+                emit({"inbound": item}, json.dumps(item, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "edit":
+                current = inbounds.show(args.inbound_id, node_id, secrets=True)
+                proposed = inbound_edit_document(current["config"], args)
+                managed_certificate = None
+                if args.tls_issue_domain or args.tls_issue_ip:
+                    managed_certificate = TLSManager(store).issue(
+                        domains=args.tls_issue_domain, ips=args.tls_issue_ip
+                    )
+                elif args.tls_managed:
+                    managed_certificate = TLSManager(store).status()
+                    if not managed_certificate.get("leaf_ready"):
+                        raise ValueError("tls_leaf_missing")
+                if managed_certificate:
+                    args.tls_cert = Path(managed_certificate["cert"])
+                    args.tls_key = Path(managed_certificate["key"])
+                if bool(args.tls_cert) != bool(args.tls_key):
+                    raise ValueError("inbound_certificate_required")
+                if args.tls_cert and args.tls_key:
+                    proposed = apply_assignments(proposed, [
+                        "streamSettings.security=tls",
+                        "streamSettings.tlsSettings.certificates=" + json.dumps([{
+                            "certificateFile": str(args.tls_cert), "keyFile": str(args.tls_key)
+                        }]),
+                    ])
+                if args.apply and not args.yes:
+                    preview = inbounds.edit(args.inbound_id, proposed, node_id=node_id,
+                                            expected_revision=args.expected_revision, remark=args.remark,
+                                            fingerprint=args.fingerprint)
+                    if args.json or not sys.stdin.isatty():
+                        raise ValueError("inbound_confirmation_required")
+                    print_inbound_plan(preview)
+                    if input("Apply these changes? [y/N]: ").strip().casefold() not in {"y", "yes"}:
+                        raise ValueError("inbound_cancelled")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if args.apply and node_id in {None, "local"} and not binary:
+                    raise ValueError("xray_not_installed")
+                result = inbounds.edit(
+                    args.inbound_id, proposed, node_id=node_id,
+                    expected_revision=args.expected_revision, remark=args.remark,
+                    fingerprint=args.fingerprint,
+                    apply=args.apply, binary=binary,
+                    config_path=args.config_path or config_root / "cores" / "xray" / "config.json",
+                )
+                if args.json:
+                    emit(result, "", True)
+                else:
+                    print_inbound_plan(result)
+                    print(f"State: {result['state']}")
+            elif args.inbound_command == "clone":
+                item = inbounds.clone(args.inbound_id, node_id or "local", node_id=inbound_node(args.source_node),
+                                      port=args.port, remark=args.remark)
+                emit({"inbound": item}, f"Cloned inbound {item['node_id']}:{item['id']}", args.json)
+            elif args.inbound_command in {"enable", "disable", "delete"}:
+                state = {"enable": "enabled", "disable": "disabled", "delete": "deleted"}[args.inbound_command]
+                if args.apply and not args.yes:
+                    raise ValueError("inbound_confirmation_required")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if args.apply and node_id in {None, "local"} and not binary:
+                    raise ValueError("xray_not_installed")
+                item = inbounds.set_state(args.inbound_id, state, node_id=node_id,
+                                          expected_revision=args.expected_revision,
+                                          grace_seconds=getattr(args, "grace", 86400),
+                                          apply=args.apply, binary=binary,
+                                          config_path=args.config_path or config_root / "cores" / "xray" / "config.json")
+                emit({"inbound": item}, f"Inbound state: {item['state']}", args.json)
+            elif args.inbound_command == "restore":
+                if args.apply and not args.yes:
+                    raise ValueError("inbound_confirmation_required")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if args.apply and node_id in {None, "local"} and not binary:
+                    raise ValueError("xray_not_installed")
+                item = inbounds.restore(args.inbound_id, node_id=node_id, apply=args.apply,
+                                        binary=binary,
+                                        config_path=args.config_path or config_root / "cores" / "xray" / "config.json")
+                emit({"inbound": item}, f"Restored inbound as {item['state']}", args.json)
+            elif args.inbound_command == "history":
+                history = inbounds.history(args.inbound_id, node_id=node_id)
+                emit({"history": history}, json.dumps(history, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "rollback":
+                if args.apply and not args.yes:
+                    raise ValueError("inbound_confirmation_required")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if args.apply and node_id in {None, "local"} and not binary:
+                    raise ValueError("xray_not_installed")
+                result = inbounds.rollback(args.inbound_id, args.revision, node_id=node_id,
+                                           expected_revision=args.expected_revision,
+                                           apply=args.apply, binary=binary,
+                                           config_path=args.config_path or config_root / "cores" / "xray" / "config.json")
+                if args.json:
+                    emit(result, "", True)
+                else:
+                    print_inbound_plan(result)
+            elif args.inbound_command == "bulk-edit":
+                targets = []
+                for target in args.target:
+                    node_reference, separator, inbound_id = target.partition(":")
+                    if not separator:
+                        raise ValueError("inbound_invalid_assignment")
+                    targets.append((inbound_node(node_reference) or "local", inbound_id))
+                report = inbounds.bulk_plan(
+                    targets, lambda config: apply_assignments(config, args.assignments)
+                )
+                emit(report, json.dumps(report, ensure_ascii=False, indent=2), args.json)
+        elif args.command == "reality":
+            if args.reality_command == "utls":
+                result = fingerprint_profiles(shutil.which("xray"))
+                if args.json:
+                    emit(result, "", True)
+                else:
+                    print("Fixed profiles:")
+                    for item in result["profiles"]:
+                        if item["group"] == "fixed":
+                            suffix = " (recommended)" if item["recommended"] else ""
+                            if not item["supported"]:
+                                suffix += " (unsupported by REALITY)"
+                            print(f"  {item['name']}{suffix}: {item['explanation']}")
+                    print("Randomization:")
+                    for item in result["profiles"]:
+                        if item["group"] == "randomization":
+                            print(f"  {item['name']}: {item['explanation']}")
+                return 0
+            is_local = args.node in {"local", "standalone"}
+            node_id = "local"
+            if not is_local:
+                node = nodes.find(args.node)
+                node_id = node["id"]
+                data = store.load()
+                payload = {
+                    key: value for key, value in vars(args).items()
+                    if key not in {"lang", "json", "command", "reality_command"}
+                    and value is not None
+                }
+                payload = json.loads(json.dumps(payload, default=str))
+                operation = enqueue_node_operation(
+                    data, node_id, "reality", args.reality_command, payload
+                )
+                store.save(data)
+                emit(
+                    {"state": "pending_node_execution", "operation": public_operation(operation)},
+                    f"REALITY {args.reality_command} queued for node {node_id}",
+                    args.json,
+                )
+                return 0
+            if args.reality_command == "scan":
+                exact = f"{args.target}/{args.sni or args.target}"
+                if args.allow_private_single and args.private_confirmation != exact:
+                    raise ValueError("private_confirmation_required")
+                result = scan_result(
+                    args.target, args.port, args.timeout, sni=args.sni, xver=args.xver,
+                    allow_private=args.allow_private_single, node_id=node_id,
+                )
+                current = store.load()
+                current.setdefault("reality_checks", []).append({
+                    key: result.get(key) for key in (
+                        "checked_at", "node_id", "target", "resolved_ip",
+                        "latency_ms", "suitable", "reason"
+                    )
+                })
+                if args.allow_private_single:
+                    current.setdefault("audit_log", []).append({
+                        "id": __import__("uuid").uuid4().hex,
+                        "timestamp": result["checked_at"], "actor": "local-admin",
+                        "object_type": "reality_target", "object_id": exact,
+                        "action": "reality.private_target_allowed", "fields": ["target", "sni"],
+                    })
+                store.save(current)
+                emit({"result": result}, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.reality_command == "discover":
+                report = discover_targets(
+                    args.targets, sni=args.sni, xver=args.xver, timeout=args.timeout,
+                    concurrency=args.concurrency, node_id=node_id,
+                    max_tasks=args.max_tasks, max_cidr_addresses=args.max_cidr_addresses,
+                )
+                if args.json:
+                    emit(report, "", True)
+                else:
+                    print("Recommended (verified):")
+                    for index, item in enumerate(report["recommended"], 1):
+                        print(f"  {index}) {item['target']}  SNI={item['sni']}  {item['latency_ms']} ms  SAN={','.join(item['sans'])}")
+                    print("Rejected:")
+                    for item in report["rejected"]:
+                        print(f"  {item['target']}  reason={item['reason']}")
+            elif args.reality_command == "configure":
+                binary = shutil.which("xray")
+                if binary is None:
+                    raise ValueError("xray_not_installed")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                user = service.find(args.user)
+                access_key = keys.default_for_user(user["id"], args.access_key)
+                selected_target, selected_sni = args.target, args.sni
+                if args.interactive:
+                    if args.json or not sys.stdin.isatty():
+                        raise ValueError("reality_interactive_tty_required")
+                    candidates = args.candidate or [
+                        f"{item['host']}:{item.get('port', 443)}"
+                        for item in json.loads(
+                            ((Path(__file__).with_name("data") / "reality_targets.json").read_text(encoding="utf-8"))
+                        )
+                    ]
+                    report = discover_targets(candidates, xver=args.xver, node_id=node_id)
+                    if not report["recommended"]:
+                        raise ValueError("no_verified_target")
+                    print("Verified REALITY targets:")
+                    for index, item in enumerate(report["recommended"], 1):
+                        print(f"  {index}) {item['target']}  {item['latency_ms']} ms  SNI={item['sni']}")
+                    raw_choice = input("Target [1]: ").strip() or "1"
+                    if not raw_choice.isdigit() or not 1 <= int(raw_choice) <= len(report["recommended"]):
+                        raise ValueError("invalid_target")
+                    selected = report["recommended"][int(raw_choice) - 1]
+                    sans = [item for item in selected.get("sans", []) if "*" not in item]
+                    if sans:
+                        print("Confirmed SNI/SAN:")
+                        for index, item in enumerate(sans, 1):
+                            print(f"  {index}) {item}")
+                        raw_sni = input("SNI [1]: ").strip() or "1"
+                        if not raw_sni.isdigit() or not 1 <= int(raw_sni) <= len(sans):
+                            raise ValueError("sni")
+                        selected_sni = sans[int(raw_sni) - 1]
+                    selected_target = selected["host"]
+                    args.target_port = selected["port"]
+                endpoint = configure_reality(
+                    binary=binary, destination=args.config or config_root / "cores" / "xray" / "config.json",
+                    user=user_for_access_key(user, access_key), target_host=selected_target,
+                    target_port=args.target_port, listen_port=args.listen_port,
+                    fingerprint=args.fingerprint, sni=selected_sni, xver=args.xver,
+                    server=args.server, node_id=node_id,
+                    force_unverified_target=args.force_unverified_target,
+                    force_confirmation=args.force_confirmation,
+                    allow_private_single=args.allow_private_single,
+                    private_confirmation=args.private_confirmation, store=store,
+                )
+                endpoint["access_key_id"] = access_key["id"]
+                keys.set_endpoint(access_key["id"], "xray_reality", endpoint)
+                emit({"endpoint": endpoint}, endpoint["uri"], args.json)
         elif args.command in {"telemt", "hysteria"}:
             core_name = args.command
             command_name = getattr(args, f"{core_name}_command")
@@ -1244,6 +1693,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 target_port=args.target_port,
                 listen_port=args.listen_port,
                 fingerprint=args.fingerprint,
+                sni=args.sni,
+                xver=args.xver,
+                server=args.server,
+                store=store,
             )
             endpoint["access_key_id"] = access_key["id"]
             keys.set_endpoint(access_key["id"], "xray_reality", endpoint)

@@ -71,6 +71,26 @@ def enqueue_access_key(
     return created
 
 
+def enqueue_node_operation(
+    data: dict[str, Any], node_id: str, resource_type: str, action: str,
+    payload: dict[str, Any], resource_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Queue an explicit node-local job such as a REALITY scan or apply."""
+    node = next((item for item in data.get("nodes", []) if item["id"] == node_id), None)
+    if node is None or not node.get("enabled", True):
+        raise ValueError("node_not_found")
+    timestamp = _now()
+    operation = {
+        "id": str(uuid.uuid4()), "node_id": node_id, "resource_type": resource_type,
+        "resource_id": resource_id or str(uuid.uuid4()), "owner_id": None,
+        "action": action, "revision": timestamp, "payload": copy.deepcopy(payload),
+        "state": "pending", "attempts": 0, "last_error": None,
+        "last_delivery_error": None, "created_at": timestamp, "updated_at": timestamp,
+    }
+    data.setdefault("node_operations", []).append(operation)
+    return operation
+
+
 def public_operation(operation: dict[str, Any]) -> dict[str, Any]:
     """Queue inspection never returns credential-bearing payloads."""
     return {key: value for key, value in operation.items() if key != "payload"}

@@ -24,6 +24,7 @@ class LocaleTests(unittest.TestCase):
             "HysteriaError",
             "TelemtError",
             "CoreServiceError",
+            "InboundError",
         }
         for path in source_dir.glob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
