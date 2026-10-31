@@ -1436,18 +1436,17 @@ start_core_service() {
         fi
         root_exec rc-service "xraydo-$core" status >/dev/null || return 1
     fi
-    if [[ "$core" == "telemt" ]]; then
-        local attempt
-        for attempt in {1..30}; do
-            if root_exec "$PREFIX/bin/telemt" healthcheck \
-                "$CONFIG_DIR/cores/telemt/telemt.toml" --mode liveness \
-                >/dev/null 2>&1; then
-                return 0
-            fi
-            sleep 1
-        done
-        return 1
-    fi
+    local attempt report="$TEMP_DIR/$core-protocol-health.json"
+    for attempt in {1..30}; do
+        if root_exec env XRAYDO_CONFIG="$CONFIG_DIR/config.json" \
+            "$BINARY_PATH" --json status >"$report" 2>/dev/null && \
+            python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(data["cores"][sys.argv[2]]["protocol"]["state"] != "healthy")' \
+                "$report" "$core"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 detect_public_host() {

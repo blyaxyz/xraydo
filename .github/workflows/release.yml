@@ -7,12 +7,14 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   installer:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Validate installer
         run: |
           bash -n install.sh
@@ -28,9 +30,34 @@ jobs:
           sed -i "s|^readonly XRAYDO_ARCHIVE_SHA256=.*|readonly XRAYDO_ARCHIVE_SHA256=\"$payload_sha256\"|" install.sh
           sed -i "s|^readonly XRAYDO_ARCHIVE_URL=.*|readonly XRAYDO_ARCHIVE_URL=\"https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/xraydo-source.tar.gz\"|" install.sh
           bash -n install.sh
-      - name: Create checksums
-        run: sha256sum install.sh xraydo-source.tar.gz > SHA256SUMS
-      - name: Publish versioned installer
+      - name: Generate SPDX SBOM and checksums
+        run: |
+          python3 scripts/build_sbom.py "release-root/xraydo-$GITHUB_SHA" xraydo.spdx.json
+          sha256sum install.sh xraydo-source.tar.gz xraydo.spdx.json > SHA256SUMS
+      - name: Create keyless Sigstore signatures
+        run: |
+          go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.1
+          cosign_path="$(go env GOPATH)/bin/cosign"
+          for artifact in install.sh xraydo-source.tar.gz xraydo.spdx.json SHA256SUMS; do
+            "$cosign_path" sign-blob --yes --bundle "$artifact.sigstore.json" "$artifact"
+          done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            install.sh
+            xraydo-source.tar.gz
+            xraydo.spdx.json
+            SHA256SUMS
+      - name: Attest SPDX SBOM
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2
+        with:
+          subject-path: xraydo-source.tar.gz
+          sbom-path: xraydo.spdx.json
+      - name: Publish signed release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" install.sh xraydo-source.tar.gz SHA256SUMS --generate-notes --verify-tag
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            install.sh xraydo-source.tar.gz xraydo.spdx.json SHA256SUMS \
+            ./*.sigstore.json --generate-notes --verify-tag

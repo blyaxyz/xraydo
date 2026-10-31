@@ -17,7 +17,7 @@ from .access_keys import AccessKeyService
 from .acme import CertbotManager
 from .countries import detect_countries, load_countries
 from .control_plane import ControlPKI, ControlPlaneService, serve_control_plane
-from .health import core_health
+from .health import core_health, overall_health
 from .hysteria import configure_hysteria
 from .hysteria_manager import HysteriaManager
 from .inbounds import InboundService, apply_assignments, load_document
@@ -1685,12 +1685,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command == "status":
             count = len(service.list())
             cores = core_health()
+            overall = overall_health(cores)
             if args.json:
-                emit({"status": "ready", "users": count, "cores": cores}, "", True)
+                emit({"status": overall, "users": count, "cores": cores}, "", True)
             else:
-                print(translator.get("status.ready", count=count))
+                if overall == "degraded":
+                    print(translator.get("status.degraded", count=count))
+                else:
+                    print(translator.get("status.ready", count=count))
                 for core, health in cores.items():
-                    print(translator.get("status.core", core=core, state=health["state"]))
+                    print(translator.get(
+                        "status.core", core=core, state=health["state"],
+                        protocol=health["protocol"]["state"],
+                    ))
         elif args.command in {"inbound", "inbounds"}:
             def inbound_node(reference: Optional[str]) -> Optional[str]:
                 if reference is None or reference in {"local", "standalone"}:

@@ -166,12 +166,14 @@ GitHub workflows 31 октября 2026 года.
 
 ### Матрица Linux
 
-- [ ] Хранить support matrix в data-файле: Tier 1, Tier 2, best effort и EOL;
-  `--allow-unsupported` должен требовать явного подтверждения.
-- [ ] Tier 1: Ubuntu Server 22.04/24.04/26.04, Debian 12/13,
+- [x] Хранить support matrix в data-файле: Tier 1 и Tier 2; CI строит jobs
+  непосредственно из этого файла, а неподдерживаемые/EOL системы не заявляются.
+- [ ] Добавить installer-флаг `--allow-unsupported` с явным подтверждением.
+- [x] Tier 1: Ubuntu Server 22.04/24.04/26.04, Debian 12/13,
   AlmaLinux/Rocky Linux 8/9/10 на amd64 и arm64, где доступны все выбранные ядра.
-- [ ] Tier 2: поддерживаемые Alpine/musl с OpenRC, openSUSE Leap и Ubuntu 20.04
-  ESM, пока зависимости остаются безопасными.
+- [x] Tier 2: поддерживаемые Alpine/musl с OpenRC и openSUSE Leap. Ubuntu 20.04
+  исключён из заявленной поддержки, поскольку штатный Python 3.8 ниже
+  минимального Python 3.9 проекта.
 - [ ] Производные определять через `ID_LIKE`, но не обещать уровень поддержки
   базового дистрибутива без соответствующего CI/VM результата.
 - [ ] Проверять в VM service start/restart, permissions, TLS, firewall/SELinux/
@@ -182,9 +184,10 @@ GitHub workflows 31 октября 2026 года.
 
 - [ ] Добавить lint/format, статический анализ, type checks, dependency/license
   audit и secret scanning; зафиксировать dev dependencies и версии инструментов.
-- [ ] Расширить CI с одной Ubuntu runner до заявленной OS/init/architecture
-  матрицы и публиковать результаты совместимости для каждого релиза.
-- [ ] Публиковать versioned артефакты для поддерживаемых платформ, SHA-256,
+- [x] Расширить быстрый CI с одной Ubuntu runner до заявленной OS/architecture
+  матрицы amd64/arm64; systemd/OpenRC и security-module проверки остаются в
+  отдельном пункте VM release-gate выше.
+- [x] Публиковать versioned артефакты, SHA-256,
   подписи/attestations, SBOM и provenance; документировать проверку пользователем.
 - [ ] Защитить release workflow через минимальные permissions, pinned actions,
   protected tags/environments и воспроизводимую сборку.

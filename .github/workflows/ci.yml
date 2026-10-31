@@ -8,14 +8,14 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
         python: ["3.9", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: ${{ matrix.python }}
       - run: bash -n install.sh
@@ -23,3 +23,43 @@ jobs:
       - run: PYTHONPATH=src python -m unittest discover -s tests -v
       - run: ./install.sh --dry-run --non-interactive
       - run: PYTHONPATH=src XRAYDO_DATA_DIR=/tmp/xraydo-smoke python -m xraydo.cli --json status
+
+  support-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: generate
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          data = json.load(open("src/xraydo/data/support_matrix.json", encoding="utf-8"))
+          include = []
+          for distro in data["distributions"]:
+              for architecture in data["architectures"]:
+                  include.append({
+                      "name": distro["name"], "tier": distro["tier"],
+                      "image": distro["image"], "platform": architecture,
+                  })
+          print("matrix=" + json.dumps({"include": include}, separators=(",", ":")))
+          PY
+
+  linux-compatibility:
+    needs: support-matrix
+    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }} / ${{ matrix.platform }} / Tier ${{ matrix.tier }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.support-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - name: Test declared platform
+        run: |
+          docker run --rm --platform '${{ matrix.platform }}' \
+            --volume "$PWD:/workspace" --workdir /workspace \
+            '${{ matrix.image }}' sh -c \
+            'command -v bash >/dev/null 2>&1 || apk add --no-cache bash; exec bash scripts/ci-platform-smoke.sh'

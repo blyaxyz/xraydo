@@ -10,6 +10,13 @@ must be called out explicitly under a `Breaking` subsection.
 - Reworked the README into a Russian-first, task-oriented guide and changed the
   bootstrap examples from a release asset to the current `master` installer,
   with both curl and wget commands.
+- Runtime health now includes protocol-level checks: Xray configuration plus
+  inbound reachability, Hysteria's authenticated traffic API, and Telemt's
+  native liveness command. Installation fails closed when a started core does
+  not pass its protocol check.
+- CI now derives a 28-job amd64/arm64 Linux compatibility matrix from a single
+  support data file. Releases include an SPDX SBOM, SHA-256 manifest, keyless
+  Sigstore bundles, and signed GitHub provenance/SBOM attestations.
 
 ### Added
 

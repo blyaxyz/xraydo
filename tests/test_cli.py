@@ -182,8 +182,9 @@ class CliTests(unittest.TestCase):
         for health in cores.values():
             self.assertEqual(
                 set(health),
-                {"installed", "configured", "state", "version"},
+                {"installed", "configured", "state", "version", "protocol"},
             )
+            self.assertEqual(set(health["protocol"]), {"state", "check"})
 
     def test_rename_preserves_credentials_and_searches_old_name(self) -> None:
         created = json.loads(

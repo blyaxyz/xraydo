@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import socket
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -63,6 +67,86 @@ def _service_state(core: str) -> str:
     return "unknown"
 
 
+def _xray_protocol(binary: str, config: Path) -> dict[str, Any]:
+    validation = _run([binary, "run", "-test", "-config", str(config)])
+    if validation is None or validation.returncode != 0:
+        return {"state": "failed", "check": "config", "detail": "xray_config_invalid"}
+    try:
+        document = json.loads(config.read_text(encoding="utf-8"))
+        inbounds = document.get("inbounds") or []
+        listeners: list[tuple[str, int]] = []
+        for inbound in inbounds:
+            if not isinstance(inbound, dict) or not isinstance(inbound.get("port"), int):
+                continue
+            host = str(inbound.get("listen") or "127.0.0.1").strip("[]")
+            if host in {"0.0.0.0", ""}:
+                host = "127.0.0.1"
+            elif host == "::":
+                host = "::1"
+            listeners.append((host, inbound["port"]))
+        if not listeners:
+            return {"state": "failed", "check": "inbound", "detail": "xray_no_inbound"}
+        failures = []
+        for host, port in listeners:
+            try:
+                with socket.create_connection((host, port), timeout=2):
+                    return {
+                        "state": "healthy", "check": "config+inbound",
+                        "endpoint": f"{host}:{port}",
+                    }
+            except OSError:
+                failures.append(f"{host}:{port}")
+        return {
+            "state": "failed", "check": "inbound", "detail": "unreachable",
+            "endpoints": failures,
+        }
+    except (OSError, ValueError, TypeError):
+        return {"state": "failed", "check": "config", "detail": "xray_config_unreadable"}
+
+
+def _hysteria_protocol(config: Path) -> dict[str, Any]:
+    try:
+        document = json.loads(config.read_text(encoding="utf-8"))
+        traffic = document["trafficStats"]
+        listen = str(traffic["listen"])
+        secret = str(traffic["secret"])
+        host, separator, port = listen.rpartition(":")
+        if not separator or host not in {"127.0.0.1", "localhost", "[::1]"} or not port.isdigit():
+            raise ValueError
+        request = urllib.request.Request(
+            f"http://{listen}/traffic",
+            headers={"Authorization": secret, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            json.load(response)
+        return {
+            "state": "healthy", "check": "authenticated-traffic-api",
+            "endpoint": listen,
+        }
+    except (OSError, KeyError, TypeError, ValueError, urllib.error.HTTPError):
+        return {
+            "state": "failed", "check": "authenticated-traffic-api",
+            "detail": "hysteria_api_unreachable",
+        }
+
+
+def _telemt_protocol(binary: str, config: Path) -> dict[str, Any]:
+    result = _run([binary, "healthcheck", str(config), "--mode", "liveness"])
+    if result is not None and result.returncode == 0:
+        return {"state": "healthy", "check": "native-liveness"}
+    return {"state": "failed", "check": "native-liveness", "detail": "telemt_liveness_failed"}
+
+
+def _protocol_health(core: str, binary: str, config: Path, service_state: str) -> dict[str, Any]:
+    if service_state != "running":
+        return {"state": "not_running", "check": "not_attempted"}
+    if core == "xray":
+        return _xray_protocol(binary, config)
+    if core == "hysteria":
+        return _hysteria_protocol(config)
+    return _telemt_protocol(binary, config)
+
+
 def core_health() -> dict[str, dict[str, Any]]:
     config = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json"))
     config_root = config.parent / "cores"
@@ -78,10 +162,25 @@ def core_health() -> dict[str, dict[str, Any]]:
             state = "config_missing"
         else:
             state = _service_state(core)
+        protocol = (
+            _protocol_health(core, binary, config_file, state)
+            if binary and configured
+            else {"state": "not_configured", "check": "not_attempted"}
+        )
         report[core] = {
             "installed": installed,
             "configured": configured,
             "state": state,
             "version": _version(core, binary) if binary else None,
+            "protocol": protocol,
         }
     return report
+
+
+def overall_health(cores: dict[str, dict[str, Any]]) -> str:
+    unhealthy = any(
+        health.get("configured")
+        and health.get("protocol", {}).get("state") != "healthy"
+        for health in cores.values()
+    )
+    return "degraded" if unhealthy else "ready"

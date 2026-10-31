@@ -249,6 +249,7 @@ credentials должны оставаться доступными только 
 - перед обновлением просматривайте изменения в `install.sh`.
 
 Порядок сообщения об уязвимостях: [SECURITY.md](SECURITY.md).
+Проверка подписей, SBOM и provenance релиза: [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
 
 ## Разработка и тесты
 
@@ -266,6 +267,7 @@ PYTHONPATH=src XRAYDO_DATA_DIR=/tmp/xraydo-dev python3 -m xraydo.cli --help
 ```
 
 План работ: [TODO.md](TODO.md). История изменений: [CHANGELOG.md](CHANGELOG.md).
+Поддерживаемые Linux-системы: [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
 
 ## English quick start
 

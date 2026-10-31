@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import subprocess
+import io
+import json
+import tempfile
 import unittest
 from unittest import mock
+from pathlib import Path
 
 from xraydo.cli import parser
-from xraydo.health import _service_state
+from xraydo.health import (
+    _hysteria_protocol,
+    _service_state,
+    _telemt_protocol,
+    _xray_protocol,
+    overall_health,
+)
 from xraydo.services import (
     CoreServiceError,
     control_service,
@@ -25,6 +35,51 @@ def completed(
 
 
 class ServiceTests(unittest.TestCase):
+    def test_overall_health_fails_when_configured_protocol_is_unhealthy(self) -> None:
+        self.assertEqual(overall_health({
+            "xray": {"configured": True, "protocol": {"state": "failed"}},
+            "telemt": {"configured": False, "protocol": {"state": "not_configured"}},
+        }), "degraded")
+
+    def test_xray_protocol_validates_config_and_connects_to_inbound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.json"
+            config.write_text(json.dumps({"inbounds": [{"listen": "0.0.0.0", "port": 443}]}))
+            connection = mock.MagicMock()
+            with (
+                mock.patch("xraydo.health._run", return_value=completed([])) as run,
+                mock.patch("xraydo.health.socket.create_connection", return_value=connection) as connect,
+            ):
+                result = _xray_protocol("/usr/bin/xray", config)
+        self.assertEqual(result["state"], "healthy")
+        self.assertEqual(result["check"], "config+inbound")
+        run.assert_called_once_with(["/usr/bin/xray", "run", "-test", "-config", str(config)])
+        connect.assert_called_once_with(("127.0.0.1", 443), timeout=2)
+
+    def test_hysteria_protocol_uses_authenticated_application_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.yaml"
+            config.write_text(json.dumps({
+                "trafficStats": {"listen": "127.0.0.1:9999", "secret": "secret"}
+            }))
+            response = io.StringIO("{}")
+            with mock.patch("xraydo.health.urllib.request.urlopen") as open_url:
+                open_url.return_value.__enter__.return_value = response
+                result = _hysteria_protocol(config)
+        self.assertEqual(result["state"], "healthy")
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "secret")
+        self.assertEqual(request.full_url, "http://127.0.0.1:9999/traffic")
+
+    def test_telemt_protocol_uses_native_liveness(self) -> None:
+        config = Path("/etc/xraydo/cores/telemt/telemt.toml")
+        with mock.patch("xraydo.health._run", return_value=completed([])) as run:
+            result = _telemt_protocol("/usr/bin/telemt", config)
+        self.assertEqual(result["state"], "healthy")
+        run.assert_called_once_with([
+            "/usr/bin/telemt", "healthcheck", str(config), "--mode", "liveness"
+        ])
+
     def test_core_health_preserves_systemd_restart_state(self) -> None:
         with (
             mock.patch("xraydo.health.shutil.which", return_value="/usr/bin/systemctl"),
