@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import re
 import secrets
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .access_keys import new_access_key
+from .audit import append_audit, audit_actor
 from .store import Store
 from .sync_queue import enqueue_access_key
 
@@ -32,10 +31,7 @@ class UserService:
 
     @staticmethod
     def _actor(explicit: Optional[str] = None) -> str:
-        actor = (explicit or os.environ.get("XRAYDO_ACTOR") or os.environ.get("USER") or "local-admin").strip()
-        if not actor or len(actor) > 128 or any(ord(character) < 32 for character in actor):
-            raise ValueError("invalid_audit_actor")
-        return actor
+        return audit_actor(explicit)
 
     @staticmethod
     def _audit(
@@ -46,41 +42,33 @@ class UserService:
         user_id: str,
         fields: list[str],
     ) -> None:
-        data.setdefault("audit_log", []).append(
-            {
-                "id": str(uuid.uuid4()),
-                "timestamp": _now(),
-                "actor": actor,
-                "action": action,
-                "object_type": "user",
-                "object_id": user_id,
-                "fields": sorted(fields),
-            }
-        )
+        append_audit(data, actor=actor, action=action, object_type="user",
+                     object_id=user_id, fields=fields)
 
     def create(self, name: str) -> tuple[dict[str, Any], str]:
         name = name.strip()
         if not name or len(name) > 64 or any(ord(char) < 32 for char in name):
             raise ValueError("invalid_name")
-        data = self.store.load()
-        if any(item["name"].casefold() == name.casefold() for item in data["users"]):
-            raise ValueError("duplicate_name")
-        timestamp = _now()
-        user = {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "enabled": True,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-            "subscription_state": "active",
-        }
-        token, credential = self._new_subscription_credential(user["id"], timestamp)
-        data["users"].append(user)
-        data.setdefault("subscription_credentials", []).append(credential)
-        key = new_access_key(user["id"])
-        data["access_keys"].append(key)
-        enqueue_access_key(data, key)
-        self.store.save(data)
+        with self.store.transaction() as data:
+            if any(item["name"].casefold() == name.casefold() for item in data["users"]):
+                raise ValueError("duplicate_name")
+            timestamp = _now()
+            user = {
+                "id": str(__import__("uuid").uuid4()),
+                "name": name,
+                "enabled": True,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "subscription_state": "active",
+            }
+            token, credential = self._new_subscription_credential(user["id"], timestamp)
+            data["users"].append(user)
+            data.setdefault("subscription_credentials", []).append(credential)
+            key = new_access_key(user["id"])
+            data["access_keys"].append(key)
+            enqueue_access_key(data, key)
+            self._audit(data, actor=self._actor(), action="user.create",
+                        user_id=user["id"], fields=["name", "enabled"])
         return user, token
 
     @staticmethod
@@ -224,14 +212,36 @@ class UserService:
         return matches[0]
 
     def set_enabled(self, reference: str, enabled: bool) -> dict[str, Any]:
-        data = self.store.load()
-        for item in data["users"]:
-            if _matches(item, reference):
-                item["enabled"] = enabled
-                item["updated_at"] = _now()
-                self.store.save(data)
-                return item
-        raise ValueError("user_not_found")
+        with self.store.transaction() as data:
+            user = next((item for item in data["users"] if _matches(item, reference)), None)
+            if user is None:
+                raise ValueError("user_not_found")
+            if enabled and any(item["user_id"] == user["id"] and item.get("state") != "purged"
+                               for item in data.get("user_deletions", [])):
+                raise ValueError("user_deletion_in_progress")
+            timestamp = _now()
+            user["enabled"] = enabled
+            user["updated_at"] = timestamp
+            affected = []
+            for key in data.get("access_keys", []):
+                if key["user_id"] != user["id"] or key["state"] == "revoked":
+                    continue
+                if not enabled:
+                    key["state_before_user_disable"] = key["state"]
+                    key["state"] = "disabled"
+                    key["disabled_reason"] = "user_disabled"
+                elif key.get("disabled_reason") == "user_disabled":
+                    key["state"] = key.pop("state_before_user_disable", "active")
+                    key["disabled_reason"] = None if key["state"] == "active" else key.get("disabled_reason")
+                else:
+                    continue
+                key["updated_at"] = timestamp
+                enqueue_access_key(data, key)
+                affected.append(key["id"])
+            self._audit(data, actor=self._actor(),
+                        action="user.enable" if enabled else "user.disable",
+                        user_id=user["id"], fields=["enabled", "access_keys"])
+            return user
 
     def rename(self, reference: str, new_name: str) -> dict[str, Any]:
         new_name = new_name.strip()
@@ -253,6 +263,8 @@ class UserService:
                     )
                     item["name"] = new_name
                     item["updated_at"] = _now()
+                    self._audit(data, actor=self._actor(), action="user.rename",
+                                user_id=item["id"], fields=["name"])
                     self.store.save(data)
                 return item
         raise ValueError("user_not_found")
@@ -377,8 +389,152 @@ class UserService:
             raise ValueError("duplicate_alias")
         target["alias"] = alias or None
         target["updated_at"] = _now()
+        self._audit(data, actor=self._actor(), action="user.alias.update",
+                    user_id=target["id"], fields=["alias"])
         self.store.save(data)
         return target
+
+    def delete_plan(self, reference: str, grace_seconds: int = 86400) -> dict[str, Any]:
+        if not 0 <= grace_seconds <= 365 * 86400:
+            raise ValueError("user_invalid_grace")
+        data = self.store.load()
+        user = next((item for item in data["users"] if _matches(item, reference)), None)
+        if user is None:
+            raise ValueError("user_not_found")
+        keys = [item for item in data.get("access_keys", []) if item["user_id"] == user["id"]]
+        nodes = [item for item in data.get("nodes", []) if item.get("enabled", True)]
+        return {
+            "user_id": user["id"], "name": user["name"], "grace_seconds": grace_seconds,
+            "access_keys": len(keys), "active_nodes": [item["id"] for item in nodes],
+            "effects": ["disable_user", "disable_access_keys", "revoke_subscription",
+                        "wait_for_node_ack", "destroy_credentials_after_grace"],
+        }
+
+    def request_delete(
+        self, reference: str, grace_seconds: int = 86400, actor: Optional[str] = None
+    ) -> dict[str, Any]:
+        if not 0 <= grace_seconds <= 365 * 86400:
+            raise ValueError("user_invalid_grace")
+        with self.store.transaction() as data:
+            user = next((item for item in data["users"] if _matches(item, reference)), None)
+            if user is None:
+                raise ValueError("user_not_found")
+            existing = next((item for item in data.get("user_deletions", [])
+                             if item["user_id"] == user["id"] and item.get("state") != "purged"), None)
+            if existing:
+                return existing
+            now = datetime.now(timezone.utc)
+            timestamp = now.isoformat()
+            user["enabled"] = False
+            user["subscription_state"] = "revoked"
+            user["updated_at"] = timestamp
+            for credential in data.get("subscription_credentials", []):
+                if credential["user_id"] == user["id"] and not credential.get("revoked_at"):
+                    credential["revoked_at"] = timestamp
+                    credential["updated_at"] = timestamp
+            operation_ids = []
+            key_ids = []
+            for key in data.get("access_keys", []):
+                if key["user_id"] != user["id"]:
+                    continue
+                key_ids.append(key["id"])
+                if key["state"] != "revoked":
+                    key["state_before_user_disable"] = key["state"]
+                    key["state"] = "disabled"
+                    key["disabled_reason"] = "user_delete"
+                    key["updated_at"] = timestamp
+                    operation_ids.extend(item["id"] for item in enqueue_access_key(data, key))
+            deletion = {
+                "id": str(__import__("uuid").uuid4()), "user_id": user["id"],
+                "state": "blocking", "requested_at": timestamp,
+                "grace_until": (now + timedelta(seconds=grace_seconds)).isoformat(),
+                "key_ids": key_ids, "operation_ids": operation_ids,
+                "required_node_ids": [item["id"] for item in data.get("nodes", [])
+                                      if item.get("enabled", True)],
+                "confirmed_node_ids": [], "blocked_at": None, "purged_at": None,
+            }
+            data.setdefault("user_deletions", []).append(deletion)
+            self._audit(data, actor=self._actor(actor), action="user.delete.request",
+                        user_id=user["id"], fields=["enabled", "access_keys",
+                                                    "subscription_state", "grace_until"])
+            return deletion
+
+    @staticmethod
+    def _refresh_deletion(data: dict[str, Any], deletion: dict[str, Any]) -> dict[str, Any]:
+        operations = {item["id"]: item for item in data.get("node_operations", [])}
+        by_node: dict[str, list[dict[str, Any]]] = {}
+        missing = False
+        for operation_id in deletion.get("operation_ids", []):
+            operation = operations.get(operation_id)
+            if operation is None:
+                missing = True
+                continue
+            by_node.setdefault(operation["node_id"], []).append(operation)
+        confirmed = sorted(node_id for node_id in deletion.get("required_node_ids", [])
+                           if by_node.get(node_id) and
+                           all(item["state"] == "applied" for item in by_node[node_id]))
+        if not deletion.get("required_node_ids"):
+            confirmed = []
+        deletion["confirmed_node_ids"] = confirmed
+        all_confirmed = not missing and set(confirmed) == set(deletion.get("required_node_ids", []))
+        now = datetime.now(timezone.utc)
+        if all_confirmed:
+            deletion["blocked_at"] = deletion.get("blocked_at") or now.isoformat()
+            deletion["state"] = (
+                "ready_to_purge"
+                if now >= datetime.fromisoformat(deletion["grace_until"])
+                else "waiting_grace"
+            )
+        else:
+            deletion["state"] = "blocking"
+        deletion["nodes"] = {
+            node_id: ("confirmed" if node_id in confirmed else "pending")
+            for node_id in deletion.get("required_node_ids", [])
+        }
+        return deletion
+
+    def deletion_status(self, reference: str) -> dict[str, Any]:
+        with self.store.transaction() as data:
+            user = next((item for item in data["users"] if _matches(item, reference)), None)
+            user_id = user["id"] if user else reference
+            deletion = next((item for item in reversed(data.get("user_deletions", []))
+                             if item["user_id"] == user_id), None)
+            if deletion is None:
+                raise ValueError("user_deletion_not_found")
+            return self._refresh_deletion(data, deletion)
+
+    def purge(self, reference: str, actor: Optional[str] = None) -> dict[str, Any]:
+        with self.store.transaction() as data:
+            user = next((item for item in data["users"] if _matches(item, reference)), None)
+            user_id = user["id"] if user else reference
+            deletion = next((item for item in reversed(data.get("user_deletions", []))
+                             if item["user_id"] == user_id), None)
+            if deletion is None:
+                raise ValueError("user_deletion_not_found")
+            self._refresh_deletion(data, deletion)
+            if deletion["state"] != "ready_to_purge":
+                raise ValueError("user_deletion_not_ready")
+            key_ids = set(deletion.get("key_ids", []))
+            data["users"] = [item for item in data["users"] if item["id"] != user_id]
+            data["access_keys"] = [item for item in data.get("access_keys", [])
+                                   if item["id"] not in key_ids]
+            data["subscription_credentials"] = [
+                item for item in data.get("subscription_credentials", [])
+                if item["user_id"] != user_id
+            ]
+            data["usage_events"] = [item for item in data.get("usage_events", [])
+                                    if item.get("access_key_id") not in key_ids]
+            data["ip_observations"] = [item for item in data.get("ip_observations", [])
+                                       if item.get("access_key_id") not in key_ids]
+            data["node_operations"] = [item for item in data.get("node_operations", [])
+                                       if item.get("owner_id") != user_id]
+            deletion["state"] = "purged"
+            deletion["purged_at"] = _now()
+            deletion.pop("key_ids", None)
+            deletion.pop("operation_ids", None)
+            self._audit(data, actor=self._actor(actor), action="user.delete.purge",
+                        user_id=user_id, fields=["credentials", "access_keys", "usage"])
+            return deletion
 
     def search(self, query: str) -> list[dict[str, Any]]:
         needle = query.strip().casefold()

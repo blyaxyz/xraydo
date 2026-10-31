@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import tempfile
 import uuid
+from contextlib import contextmanager
+import fcntl
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Iterator, Optional, TypeVar
 
 CURRENT_SCHEMA_VERSION = 9
+T = TypeVar("T")
 
 
 def configured_role() -> str:
@@ -36,6 +40,8 @@ class Store:
     def __init__(self, data_dir: Optional[Path] = None) -> None:
         self.data_dir = data_dir or default_data_dir()
         self.path = self.data_dir / "state.json"
+        self.backup_path = self.data_dir / "state.json.previous"
+        self.lock_path = self.data_dir / ".state.lock"
 
     def _data_dir_mode(self) -> int:
         # Core services use separate unprivileged accounts and keep their
@@ -49,6 +55,7 @@ class Store:
     def initial() -> dict[str, Any]:
         return {
             "schema_version": CURRENT_SCHEMA_VERSION,
+            "state_revision": 0,
             "settings": {
                 "country_auto_flags": True,
                 "role": configured_role(),
@@ -74,6 +81,7 @@ class Store:
             "control_bootstrap_tokens": [],
             "node_credentials": [],
             "control_nonces": [],
+            "user_deletions": [],
         }
 
     @staticmethod
@@ -258,30 +266,77 @@ class Store:
         for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions",
                            "hysteria_diagnostics", "telemt_artifacts", "telemt_diagnostics",
                            "telemt_usage_cursors", "control_bootstrap_tokens",
-                           "node_credentials", "control_nonces"):
+                           "node_credentials", "control_nonces", "user_deletions"):
             if collection not in data:
                 data[collection] = []
                 changed = True
         if version != CURRENT_SCHEMA_VERSION:
             raise RuntimeError("unsupported state schema")
+        if not isinstance(data.get("state_revision", 0), int):
+            raise RuntimeError("invalid state revision")
+        data.setdefault("state_revision", 0)
         return data, changed
 
-    def load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return self.initial()
-        with self.path.open(encoding="utf-8") as handle:
-            data = json.load(handle)
-        if not isinstance(data, dict):
-            raise RuntimeError("invalid state document")
-        data, changed = self.migrate(data)
-        if changed:
-            self.save(data)
-        return data
-
-    def save(self, data: dict[str, Any]) -> None:
+    def _prepare_directory(self) -> None:
         directory_mode = self._data_dir_mode()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=directory_mode)
         os.chmod(self.data_dir, directory_mode)
+
+    @contextmanager
+    def _lock(self, exclusive: bool = True) -> Iterator[None]:
+        self._prepare_directory()
+        descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            os.chmod(self.lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def _read_path(self, path: Path) -> dict[str, Any]:
+        with path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid state document")
+        return data
+
+    def _load_unlocked(self, *, recover: bool = True) -> tuple[dict[str, Any], bool]:
+        if not self.path.exists():
+            return self.initial(), False
+        try:
+            data = self._read_path(self.path)
+            return self.migrate(data)
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+            if not recover or not self.backup_path.is_file():
+                raise RuntimeError("state_corrupt") from error
+            try:
+                backup, changed = self.migrate(self._read_path(self.backup_path))
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as backup_error:
+                raise RuntimeError("state_corrupt") from backup_error
+            self._write_unlocked(backup, keep_backup=False)
+            return backup, changed
+
+    def load(self) -> dict[str, Any]:
+        with self._lock(exclusive=True):
+            data, changed = self._load_unlocked()
+            if changed:
+                revision = int(data.get("state_revision", 0))
+                data["state_revision"] = revision + 1
+                self._write_unlocked(data)
+            return data
+
+    def save(self, data: dict[str, Any]) -> None:
+        with self._lock(exclusive=True):
+            current, _changed = self._load_unlocked()
+            expected = int(data.get("state_revision", 0))
+            actual = int(current.get("state_revision", 0))
+            if expected != actual:
+                raise RuntimeError("state_conflict")
+            data["state_revision"] = actual + 1
+            self._write_unlocked(data)
+
+    def _write_unlocked(self, data: dict[str, Any], *, keep_backup: bool = True) -> None:
         descriptor, temporary = tempfile.mkstemp(prefix=".state-", dir=self.data_dir)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -290,7 +345,39 @@ class Store:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temporary, 0o600)
+            if keep_backup and self.path.is_file():
+                backup_descriptor, backup_temporary = tempfile.mkstemp(
+                    prefix=".previous-", dir=self.data_dir
+                )
+                os.close(backup_descriptor)
+                try:
+                    shutil.copyfile(self.path, backup_temporary)
+                    os.chmod(backup_temporary, 0o600)
+                    with open(backup_temporary, "rb") as handle:
+                        os.fsync(handle.fileno())
+                    os.replace(backup_temporary, self.backup_path)
+                finally:
+                    Path(backup_temporary).unlink(missing_ok=True)
             os.replace(temporary, self.path)
+            directory_descriptor = os.open(self.data_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+    @contextmanager
+    def transaction(self) -> Iterator[dict[str, Any]]:
+        """Hold the inter-process lock for one atomic read-modify-write cycle."""
+        with self._lock(exclusive=True):
+            data, _changed = self._load_unlocked()
+            revision = int(data.get("state_revision", 0))
+            yield data
+            data["state_revision"] = revision + 1
+            self._write_unlocked(data)
+
+    def update(self, callback: Callable[[dict[str, Any]], T]) -> T:
+        with self.transaction() as data:
+            return callback(data)
