@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -68,6 +69,29 @@ def enqueue_access_key(
         }
         operations.append(operation)
         created.append(operation)
+    # Hysteria credentials are separate per AccessKey and only go to nodes where
+    # that core is enabled. Endpoint publication waits for the node's ack.
+    existing_nodes = {operation["node_id"] for operation in created if operation["resource_type"] == "hysteria_user"}
+    for core in data.get("node_cores", []):
+        if core.get("core") != "hysteria2" or not core.get("enabled", True):
+            continue
+        node_id = core["node_id"]
+        if node_ids is not None and node_id not in node_ids or node_id in existing_nodes:
+            continue
+        credential = key.get("credentials", {}).get("hysteria_password")
+        operation = {
+            "id": str(uuid.uuid4()), "node_id": node_id, "resource_type": "hysteria_user",
+            "resource_id": resource_id, "owner_id": owner_id,
+            "action": "revoke" if action == "revoke" or key.get("state") == "revoked" else "upsert",
+            "revision": key["updated_at"],
+            "payload": {"access_key_id": resource_id,
+                        "username": "k_" + resource_id.replace("-", ""),
+                        "password": credential if key.get("state") == "active" else None,
+                        "state": key.get("state")},
+            "state": "pending", "attempts": 0, "last_error": None,
+            "last_delivery_error": None, "created_at": timestamp, "updated_at": timestamp,
+        }
+        operations.append(operation); created.append(operation)
     return created
 
 
@@ -77,7 +101,7 @@ def enqueue_node_operation(
 ) -> dict[str, Any]:
     """Queue an explicit node-local job such as a REALITY scan or apply."""
     node = next((item for item in data.get("nodes", []) if item["id"] == node_id), None)
-    if node is None or not node.get("enabled", True):
+    if node_id != "local" and (node is None or not node.get("enabled", True)):
         raise ValueError("node_not_found")
     timestamp = _now()
     operation = {
@@ -132,6 +156,10 @@ class SyncQueueService:
         for operation in data.get("node_operations", []):
             if operation["node_id"] != node_id or operation["state"] != "pending":
                 continue
+            dependency_id = operation.get("depends_on")
+            if dependency_id and not any(item["id"] == dependency_id and item["state"] == "applied"
+                                         for item in data.get("node_operations", [])):
+                continue
             operation["state"] = "delivering"
             operation["attempts"] += 1
             operation["updated_at"] = timestamp
@@ -141,7 +169,8 @@ class SyncQueueService:
         self.store.save(data)
         return claimed
 
-    def finish(self, operation_id: str, *, error: Optional[str] = None) -> dict[str, Any]:
+    def finish(self, operation_id: str, *, error: Optional[str] = None,
+               result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if error is not None:
             error = error.strip()
             if not error or len(error) > 500 or any(ord(char) < 32 for char in error):
@@ -160,6 +189,35 @@ class SyncQueueService:
         if error:
             operation["last_delivery_error"] = error
         operation["updated_at"] = _now()
+        if result is not None:
+            if not isinstance(result, dict) or len(json.dumps(result)) > 65536:
+                raise ValueError("sync_invalid_result")
+            operation["result"] = copy.deepcopy(result)
+        if not error and operation.get("resource_type") in {"hysteria_user", "hysteria_inbound"} and result:
+            endpoint = result.get("endpoint")
+            if isinstance(endpoint, dict) and isinstance(endpoint.get("uri"), str):
+                key = next((item for item in data.get("access_keys", [])
+                            if item["id"] == operation["resource_id"]), None)
+                if key is not None and key.get("state") == "active":
+                    endpoint = copy.deepcopy(endpoint)
+                    endpoint["node_id"] = operation["node_id"]
+                    endpoint_key = ("hysteria2" if operation["node_id"] == "local"
+                                    else "hysteria2@" + operation["node_id"])
+                    key.setdefault("endpoints", {})[endpoint_key] = endpoint
+                    key["updated_at"] = _now()
+        if not error and operation.get("resource_type") == "core" and result:
+            core = result.get("core")
+            if isinstance(core, dict) and core.get("core") == "hysteria2":
+                reported = copy.deepcopy(core)
+                reported["node_id"] = operation["node_id"]
+                records = data.setdefault("node_cores", [])
+                current = next((item for item in records
+                                if item.get("node_id") == operation["node_id"]
+                                and item.get("core") == "hysteria2"), None)
+                if current is None:
+                    records.append(reported)
+                else:
+                    current.update(reported)
         self.store.save(data)
         return operation
 

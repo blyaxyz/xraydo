@@ -75,19 +75,20 @@ class SubscriptionService:
             if key["user_id"] != user_id or key["state"] != "active":
                 continue
             for protocol, endpoint in key.get("endpoints", {}).items():
+                base_protocol = protocol.split("@", 1)[0]
                 if not endpoint.get("enabled", True):
                     continue
                 node_id = endpoint.get("node_id", "local")
                 uri = endpoint.get("uri")
                 if uri:
                     pin = None
-                    if protocol == "hysteria2":
+                    if base_protocol == "hysteria2":
                         uri, pin = _hysteria_pin(uri, endpoint.get("pin_sha256"))
                     uri = _with_remark(uri, identity["remark"])
                     entry = {
                         "access_key_id": key["id"],
                         "node_id": node_id,
-                        "protocol": protocol,
+                        "protocol": base_protocol,
                         "remark": identity["remark"],
                         "uri": uri,
                     }
@@ -97,7 +98,7 @@ class SubscriptionService:
                             "pin_sha256": pin,
                         }
                     entries.append(entry)
-                if protocol == "telemt":
+                if base_protocol == "telemt":
                     for field in ("tg_uri", "https_uri"):
                         if endpoint.get(field):
                             mtproto.append(

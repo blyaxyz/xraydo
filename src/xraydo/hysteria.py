@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -114,32 +115,66 @@ def select_masquerade(explicit: Optional[str] = None) -> str:
     raise HysteriaError("hysteria_masquerade_failed")
 
 
-def _port_available(port: int, socket_type: int) -> bool:
+def _port_available(port: int, socket_type: int, listen: str = "0.0.0.0") -> bool:
     try:
-        with socket.socket(socket.AF_INET, socket_type) as listener:
-            listener.bind(("0.0.0.0", port))
+        address = listen.strip("[]")
+        family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+        with socket.socket(family, socket_type) as listener:
+            listener.bind((address, port))
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
+
+
+def _listen_address(listen: str, port: int) -> str:
+    if not listen:
+        return f":{port}"
+    address = listen.strip("[]")
+    try:
+        version = ipaddress.ip_address(address).version
+    except ValueError as error:
+        raise HysteriaError("hysteria_invalid_listen") from error
+    return f"[{address}]:{port}" if version == 6 else f"{address}:{port}"
 
 
 def build_config(
     *, port: int, cert: Path, key: Path, username: str, password: str,
     obfs_type: str, obfs_password: Optional[str], stats_port: int,
-    stats_secret: str, masquerade: str,
+    stats_secret: str, masquerade: str, listen: str = "",
+    bandwidth_up: Optional[str] = None, bandwidth_down: Optional[str] = None,
+    congestion: str = "bbr", ignore_client_bandwidth: bool = True,
+    disable_udp: bool = False, udp_idle_timeout: str = "60s",
+    users: Optional[dict[str, str]] = None, acme: Optional[dict[str, Any]] = None,
+    ech_key_path: Optional[Path] = None,
 ) -> dict[str, Any]:
+    if congestion not in {"bbr", "reno"}:
+        raise HysteriaError("hysteria_invalid_congestion")
+    if not udp_idle_timeout or not re.fullmatch(r"[1-9][0-9]*(?:ms|s|m|h)", udp_idle_timeout):
+        raise HysteriaError("hysteria_invalid_udp_timeout")
+    credentials = dict(users or {})
+    credentials[username] = password
     config: dict[str, Any] = {
-        "listen": f":{port}",
-        "tls": {"cert": str(cert), "key": str(key), "sniGuard": "dns-san"},
-        "auth": {"type": "userpass", "userpass": {username: password}},
-        "congestion": {"type": "bbr", "bbrProfile": "standard"},
-        "ignoreClientBandwidth": True,
+        "listen": _listen_address(listen, port),
+        "auth": {"type": "userpass", "userpass": credentials},
+        "congestion": {"type": congestion},
+        "ignoreClientBandwidth": ignore_client_bandwidth,
+        "disableUDP": disable_udp,
+        "udpIdleTimeout": udp_idle_timeout,
         "trafficStats": {"listen": f"127.0.0.1:{stats_port}", "secret": stats_secret},
         "masquerade": {
             "type": "proxy",
             "proxy": {"url": masquerade, "rewriteHost": True, "insecure": False},
         },
     }
+    if acme:
+        config["acme"] = acme
+    else:
+        config["tls"] = {"cert": str(cert), "key": str(key), "sniGuard": "dns-san"}
+    bandwidth = {key: value for key, value in (("up", bandwidth_up), ("down", bandwidth_down)) if value}
+    if bandwidth:
+        config["bandwidth"] = bandwidth
+    if ech_key_path:
+        config["ech"] = {"keyPath": str(ech_key_path)}
     if obfs_type != "none":
         config["obfs"] = {"type": obfs_type, obfs_type: {"password": obfs_password}}
     return config
@@ -194,51 +229,92 @@ def configure_hysteria(
     server: str, port: int = 1935, stats_port: int = 9999,
     cert: Optional[Path] = None, key: Optional[Path] = None,
     masquerade: Optional[str] = None, obfs_type: str = "salamander",
+    listen: str = "0.0.0.0", bandwidth_up: Optional[str] = None,
+    bandwidth_down: Optional[str] = None, congestion: str = "bbr",
+    ignore_client_bandwidth: bool = True, disable_udp: bool = False,
+    udp_idle_timeout: str = "60s", acme: Optional[dict[str, Any]] = None,
+    ech_key_path: Optional[Path] = None, existing_users: Optional[dict[str, str]] = None,
+    ech_config: Optional[str] = None, allow_insecure: bool = False,
+    remark: Optional[str] = None,
 ) -> dict[str, Any]:
     if not 1 <= port <= 65535 or not 1 <= stats_port <= 65535:
         raise HysteriaError("hysteria_invalid_port")
+    _listen_address(listen, port)
+    if obfs_type not in {"salamander", "gecko", "none"}:
+        raise HysteriaError("hysteria_invalid_obfs")
+    if acme and (cert is not None or key is not None):
+        raise HysteriaError("hysteria_tls_acme_conflict")
+    if (cert is None) != (key is None):
+        raise HysteriaError("hysteria_tls_pair_required")
     if not destination.exists():
-        if not _port_available(port, socket.SOCK_DGRAM):
+        if not _port_available(port, socket.SOCK_DGRAM, listen):
             raise HysteriaError("hysteria_port_busy")
         if not _port_available(stats_port, socket.SOCK_STREAM):
             raise HysteriaError("hysteria_stats_port_busy")
-    if obfs_type not in {"salamander", "gecko", "none"}:
-        raise HysteriaError("hysteria_invalid_obfs")
-    if (cert is None) != (key is None):
-        raise HysteriaError("hysteria_tls_pair_required")
     generated_ca: Optional[Path] = None
-    if cert is None or key is None:
+    if acme:
+        domains = acme.get("domains", [])
+        if not isinstance(domains, list) or server not in domains:
+            raise HysteriaError("hysteria_acme_domain_mismatch")
+        cert = Path("/dev/null")
+        key = Path("/dev/null")
+    elif cert is None or key is None:
         pki = generate_private_ca(server, pki_dir)
         cert, key, generated_ca = pki["cert"], pki["key"], pki["ca"]
-    if not cert.is_file() or not key.is_file():
+    if not acme and (not cert.is_file() or not key.is_file()):
         raise HysteriaError("hysteria_tls_missing")
-    if not certificate_matches(cert, server):
+    if not acme and not certificate_matches(cert, server):
         raise HysteriaError("hysteria_tls_name_mismatch")
+    if ech_key_path is not None and not ech_key_path.is_file():
+        raise HysteriaError("hysteria_ech_key_missing")
+    if bool(ech_key_path) != bool(ech_config):
+        raise HysteriaError("hysteria_ech_pair_required")
     selected_masquerade = select_masquerade(masquerade)
-    username = "u_" + user["id"].replace("-", "")[:16]
+    identity = str(user.get("access_key_id") or user["id"])
+    username = "k_" + identity.replace("-", "")
     password = protocol_credentials(user, "hysteria2")["hysteria_password"]
     obfs_password = secrets.token_urlsafe(32) if obfs_type != "none" else None
     stats_secret = secrets.token_urlsafe(32)
-    pin = certificate_pin(cert)
+    pin = certificate_pin(cert) if not acme else None
     config = build_config(
         port=port, cert=cert, key=key, username=username, password=password,
         obfs_type=obfs_type, obfs_password=obfs_password, stats_port=stats_port,
         stats_secret=stats_secret,
         masquerade=selected_masquerade,
+        listen=listen, bandwidth_up=bandwidth_up, bandwidth_down=bandwidth_down,
+        congestion=congestion, ignore_client_bandwidth=ignore_client_bandwidth,
+        disable_udp=disable_udp, udp_idle_timeout=udp_idle_timeout,
+        users=existing_users, acme=acme, ech_key_path=ech_key_path,
     )
     validate_and_install(binary, config, destination)
     host = f"[{server}]" if ":" in server and not server.startswith("[") else server
-    query_values = {"sni": server, "pinSHA256": pin}
+    query_values = {"sni": server, "alpn": "h3"}
+    if pin:
+        query_values["pinSHA256"] = pin
+    if allow_insecure:
+        query_values["insecure"] = "1"
     if obfs_type != "none":
         query_values.update({"obfs": obfs_type, "obfs-password": obfs_password or ""})
     query = urllib.parse.urlencode(query_values)
     auth = urllib.parse.quote(f"{username}:{password}", safe="")
-    uri = f"hysteria2://{auth}@{host}:{port}/?{query}#{urllib.parse.quote(user['name'])}"
+    endpoint_remark = remark or user["name"]
+    uri = f"hysteria2://{auth}@{host}:{port}/?{query}#{urllib.parse.quote(endpoint_remark)}"
+    client_config = {"server": f"{host}:{port}", "auth": f"{username}:{password}",
+                     "tls": {"sni": server, "insecure": allow_insecure},
+                     "quic": {"alpn": ["h3"]}}
+    if pin:
+        client_config["tls"]["pinSHA256"] = pin
+    if ech_config:
+        client_config["tls"]["ech"] = ech_config
+    if obfs_type != "none":
+        client_config["obfs"] = {"type": obfs_type, obfs_type: {"password": obfs_password}}
     return {
         "config": str(destination), "server": server, "port": port,
         "username": username, "password": password, "obfs": obfs_type,
         "obfs_password": obfs_password, "stats_listen": f"127.0.0.1:{stats_port}",
         "stats_secret": stats_secret, "masquerade": selected_masquerade,
         "pin_sha256": pin, "ca_cert": str(generated_ca) if generated_ca else None,
-        "uri": uri,
+        "uri": uri, "client_config": client_config, "alpn": "h3",
+        "insecure": allow_insecure,
+        "warning": "TLS certificate verification is disabled" if allow_insecure else None,
     }

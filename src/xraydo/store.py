@@ -57,6 +57,9 @@ class Store:
             "reality_checks": [],
             "inbounds": [],
             "inbound_versions": [],
+            "node_cores": [],
+            "core_versions": [],
+            "hysteria_diagnostics": [],
         }
 
     @staticmethod
@@ -238,7 +241,7 @@ class Store:
         if "reality_checks" not in data:
             data["reality_checks"] = []
             changed = True
-        for collection in ("inbounds", "inbound_versions"):
+        for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions", "hysteria_diagnostics"):
             if collection not in data:
                 data[collection] = []
                 changed = True

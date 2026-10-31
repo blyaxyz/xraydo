@@ -637,7 +637,7 @@ if [[ ",$CORES," == *,hysteria,* ]]; then
         hysteria_checksum="a68a61a84452ca250ce0368202521965ca9cc9d801a404f1dc9008ac6cf677a7"
     fi
     hysteria_binary="$TEMP_DIR/$hysteria_asset"
-    download_verified "https://github.com/apernet/hysteria/releases/download/app%2Fv2.13.0/$hysteria_asset" "$hysteria_binary" "$hysteria_checksum"
+    download_verified "https://github.com/HyNetworks/hysteria/releases/download/app%2Fv2.13.0/$hysteria_asset" "$hysteria_binary" "$hysteria_checksum"
     install_exec install -d -m 0755 "$CORE_DIR/hysteria/$HYSTERIA_VERSION"
     install_exec install -m 0755 "$hysteria_binary" "$CORE_DIR/hysteria/$HYSTERIA_VERSION/hysteria"
     install_exec install -m 0755 "$hysteria_binary" "$PREFIX/bin/hysteria"

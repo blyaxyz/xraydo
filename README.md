@@ -152,6 +152,12 @@ xraydo node remove de-1 --yes
 xraydo settings country-flags off
 xraydo core reality --user bob --access-key <keyID> --target ya.ru --listen-port 443 --fingerprint firefox
 xraydo core hysteria --user bob --server 203.0.113.10 --port 1935
+xraydo hysteria install --node all
+xraydo hysteria check-update --node de-1
+xraydo hysteria capabilities --node de-1
+xraydo hysteria diagnostics --node de-1
+xraydo hysteria collect-stats --node local --secret '<trafficStats secret>'
+xraydo hysteria revoke-key <accessKeyID> --node all
 xraydo core telemt --user bob --server 203.0.113.10 --port 8443
 xraydo telemt status
 xraydo telemt logs --lines 100
@@ -172,16 +178,30 @@ so renaming a user neither splits traffic counters nor changes credentials.
 not a randomly generated cryptographic fingerprint. Explicit randomizer profiles
 remain available through `--fingerprint`.
 
-The Hysteria command checks UDP and loopback API ports, creates an independent
-userpass/obfuscation/stats secret set, verifies an HTTPS masquerade target, and
-uses either a matching `--cert`/`--key` pair or a locally generated private CA.
+The Hysteria command checks UDP and loopback API ports, creates independent
+AccessKey userpass credentials and cryptographically random obfuscation/stats
+secrets, verifies an HTTPS masquerade target, and uses a matching
+`--cert`/`--key` pair, the common certificate manager (`--tls-managed`), ACME,
+or a locally generated private CA. QUIC bandwidth, BBR/Reno congestion control,
+UDP policy, IPv4/IPv6 listeners and ECH can be configured explicitly.
 The returned URI uses Hysteria's `pinSHA256` leaf-certificate pinning and never
-enables `insecure`. Subscription rendering validates that pin against stored
+enables `insecure` by default; `--insecure` is an explicit unsafe override and
+returns a warning. Subscription rendering validates that pin against stored
 endpoint metadata, restores it to a URI if needed, and exposes normalized
 `tls.verification=leaf-sha256` metadata in structured JSON. A mismatch fails
 closed instead of publishing a weaker connection string. Plain HTTPS
 subscription URLs have no portable pin parameter; private-CA trust is therefore
 distributed through the CA fingerprint and exported trust bundle.
+
+`xraydo hysteria install/update/rollback` manages the official standalone core
+per node. The target node resolves its own Linux architecture, downloads only
+from the official HyNetworks release, verifies the published SHA-256 digest and
+reports the installed version/capabilities back with its synchronization ACK.
+Hysteria endpoints are published into the common subscription only after that
+node ACK succeeds. Traffic statistics are loopback-only: `/online` counts client
+instances rather than proxy streams, aggregate traffic does not reliably expose
+client IP/UDP attribution, and a kick must be paired with auth revocation to
+prevent reconnects.
 
 The Telemt command enables only Fake TLS (`ee`), verifies the masking domain,
 creates an independent 16-byte user secret, binds its authenticated Control API

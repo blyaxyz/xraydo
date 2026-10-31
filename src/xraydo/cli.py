@@ -17,6 +17,7 @@ from .access_keys import AccessKeyService
 from .countries import detect_countries, load_countries
 from .health import core_health
 from .hysteria import configure_hysteria
+from .hysteria_manager import HysteriaManager
 from .inbounds import InboundService, apply_assignments, load_document
 from .i18n import SUPPORTED_LANGUAGES, Translator, installed_language, requested_language
 from .nodes import NodeService
@@ -120,6 +121,7 @@ def parser() -> argparse.ArgumentParser:
     sync_claim.add_argument("--include-payload", action="store_true")
     sync_ack = sync_commands.add_parser("ack")
     sync_ack.add_argument("operation_id")
+    sync_ack.add_argument("--result", help="JSON result reported by the node agent")
     sync_fail = sync_commands.add_parser("fail")
     sync_fail.add_argument("operation_id")
     sync_fail.add_argument("--error", required=True)
@@ -447,6 +449,24 @@ def parser() -> argparse.ArgumentParser:
     hysteria.add_argument("--masquerade")
     hysteria.add_argument("--obfs", choices=("salamander", "gecko", "none"), default="salamander")
     hysteria.add_argument("--config", type=Path)
+    hysteria.add_argument("--node", default="local")
+    hysteria.add_argument("--listen", default="0.0.0.0")
+    hysteria.add_argument("--bandwidth-up")
+    hysteria.add_argument("--bandwidth-down")
+    hysteria.add_argument("--congestion", choices=("bbr", "reno"), default="bbr")
+    hysteria.add_argument("--ignore-client-bandwidth", action=argparse.BooleanOptionalAction, default=True)
+    hysteria.add_argument("--disable-udp", action="store_true")
+    hysteria.add_argument("--udp-idle-timeout", default="60s")
+    hysteria.add_argument("--tls-managed", action="store_true")
+    hysteria.add_argument("--acme-domain", action="append", default=[])
+    hysteria.add_argument("--acme-email")
+    hysteria.add_argument("--acme-ca")
+    hysteria.add_argument("--acme-type", choices=("http", "tls", "dns"))
+    hysteria.add_argument("--acme-dir")
+    hysteria.add_argument("--ech-key", type=Path)
+    hysteria.add_argument("--ech-config")
+    hysteria.add_argument("--insecure", action="store_true")
+    hysteria.add_argument("--remark")
     telemt = core_commands.add_parser("telemt")
     telemt.add_argument("--user", default="default")
     telemt.add_argument("--access-key")
@@ -474,12 +494,41 @@ def parser() -> argparse.ArgumentParser:
     telemt_logs = telemt_commands.add_parser("logs")
     telemt_logs.add_argument("--lines", type=int, default=100)
 
-    hysteria_admin = commands.add_parser("hysteria", help="manage the local Hysteria 2 service")
+    hysteria_admin = commands.add_parser("hysteria", help="manage Hysteria 2 per node")
     hysteria_commands = hysteria_admin.add_subparsers(dest="hysteria_command", required=True)
     for action in ("start", "stop", "restart", "status", "version"):
-        hysteria_commands.add_parser(action)
+        command = hysteria_commands.add_parser(action)
+        command.add_argument("--node", default="local")
     hysteria_logs = hysteria_commands.add_parser("logs")
     hysteria_logs.add_argument("--lines", type=int, default=100)
+    hysteria_logs.add_argument("--node", default="local")
+    for action in ("install", "update"):
+        command = hysteria_commands.add_parser(action)
+        command.add_argument("--node", default="local")
+        command.add_argument("--version")
+        command.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/hysteria"))
+    hysteria_check = hysteria_commands.add_parser("check-update")
+    hysteria_check.add_argument("--node", default="local")
+    hysteria_rollback = hysteria_commands.add_parser("rollback")
+    hysteria_rollback.add_argument("--node", default="local")
+    hysteria_rollback.add_argument("--version")
+    hysteria_rollback.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/hysteria"))
+    hysteria_capabilities = hysteria_commands.add_parser("capabilities")
+    hysteria_capabilities.add_argument("--node", default="local")
+    hysteria_diagnostics = hysteria_commands.add_parser("diagnostics")
+    hysteria_diagnostics.add_argument("--node", default="local")
+    hysteria_revoke = hysteria_commands.add_parser("revoke-key")
+    hysteria_revoke.add_argument("key_id")
+    hysteria_revoke.add_argument("--node", default="all")
+    hysteria_collect = hysteria_commands.add_parser("collect-stats")
+    hysteria_collect.add_argument("--node", default="local")
+    hysteria_collect.add_argument("--listen", default="127.0.0.1:9999")
+    hysteria_collect.add_argument("--secret", required=True)
+    hysteria_collect.add_argument("--clear", action="store_true")
+    hysteria_backup = hysteria_commands.add_parser("backup")
+    hysteria_backup.add_argument("--node", default="local")
+    hysteria_backup.add_argument("--config", type=Path, required=True)
+    hysteria_backup.add_argument("--output", type=Path, required=True)
     return result
 
 
@@ -938,7 +987,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 operations = claimed if args.include_payload else [public_operation(item) for item in claimed]
                 emit({"operations": operations}, translator.get("sync.claimed", count=len(operations)), args.json)
             elif args.sync_command == "ack":
-                operation = sync_queue.finish(args.operation_id)
+                operation = sync_queue.finish(args.operation_id,
+                    result=json.loads(args.result) if args.result else None)
                 emit({"operation": public_operation(operation)}, translator.get("sync.updated", id=operation["id"], state=operation["state"]), args.json)
             elif args.sync_command == "fail":
                 operation = sync_queue.finish(args.operation_id, error=args.error)
@@ -1665,12 +1715,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 endpoint["access_key_id"] = access_key["id"]
                 keys.set_endpoint(access_key["id"], "xray_reality", endpoint)
                 emit({"endpoint": endpoint}, endpoint["uri"], args.json)
-        elif args.command in {"telemt", "hysteria"}:
+        elif args.command == "hysteria":
+            manager = HysteriaManager(store)
+            command_name = args.hysteria_command
+            if command_name in {"install", "update"}:
+                result = manager.install_many(args.node, version=args.version,
+                                              binary_path=args.binary_path)
+            elif command_name == "check-update":
+                result = manager.check_updates(args.node)
+            elif command_name == "rollback":
+                result = manager.rollback(args.node, args.version, args.binary_path)
+            elif command_name == "version":
+                result = manager.versions(args.node)
+            elif command_name == "capabilities":
+                result = manager.capabilities(args.node)
+            elif command_name == "diagnostics":
+                result = manager.diagnostics(args.node)
+            elif command_name == "revoke-key":
+                result = manager.revoke_key(args.key_id, args.node)
+            elif command_name == "collect-stats":
+                result = manager.collect_usage(args.node, args.listen, args.secret, clear=args.clear)
+            elif command_name == "backup":
+                result = manager.backup(args.node, args.config, args.output)
+            else:
+                result = manager.service_many(command_name, args.node, getattr(args, "lines", 100))
+            emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+        elif args.command == "telemt":
             core_name = args.command
             command_name = getattr(args, f"{core_name}_command")
             manage_local_service(
                 core_name,
-                "Telemt" if core_name == "telemt" else "Hysteria 2",
+                "Telemt",
                 command_name,
                 getattr(args, "lines", 100),
                 translator,
@@ -1706,6 +1781,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 args.json,
             )
         elif args.command == "core" and args.core_command == "hysteria":
+            target_node = "local" if args.node in {"local", "standalone"} else nodes.find(args.node)["id"]
+            if target_node != "local":
+                user = service.find(args.user)
+                access_key = keys.default_for_user(user["id"], args.access_key)
+                data = store.load()
+                operation = enqueue_node_operation(data, target_node, "hysteria_inbound", "configure", {
+                    "access_key_id": access_key["id"], "server": args.server, "port": args.port,
+                    "stats_port": args.stats_port, "listen": args.listen,
+                    "bandwidth_up": args.bandwidth_up, "bandwidth_down": args.bandwidth_down,
+                    "congestion": args.congestion, "ignore_client_bandwidth": args.ignore_client_bandwidth,
+                    "disable_udp": args.disable_udp, "udp_idle_timeout": args.udp_idle_timeout,
+                    "obfs": args.obfs, "masquerade": args.masquerade,
+                    "tls_managed": args.tls_managed, "acme_domains": args.acme_domain,
+                    "acme_email": args.acme_email, "acme_ca": args.acme_ca,
+                    "acme_type": args.acme_type, "acme_dir": args.acme_dir,
+                    "ech_key": str(args.ech_key) if args.ech_key else None,
+                    "ech_config": args.ech_config, "allow_insecure": args.insecure,
+                    "publish_endpoint_after_ack": True,
+                }, resource_id=access_key["id"])
+                store.save(data)
+                HysteriaManager(store).audit_configuration(target_node, access_key["id"], queued=True)
+                emit({"state": "pending_node_execution", "operation": public_operation(operation)},
+                     f"Hysteria configuration queued for node {target_node}", args.json)
+                return 0
             binary = shutil.which("hysteria")
             if binary is None:
                 raise ValueError("hysteria_not_installed")
@@ -1715,6 +1814,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             user = service.find(args.user)
             access_key = keys.default_for_user(user["id"], args.access_key)
             runtime_user = user_for_access_key(user, access_key)
+            cert, key = args.cert, args.key
+            if args.tls_managed:
+                managed_tls = TLSManager(store).status()
+                if not managed_tls.get("leaf_ready"):
+                    raise ValueError("tls_leaf_missing")
+                cert, key = Path(managed_tls["cert"]), Path(managed_tls["key"])
+            acme = None
+            if args.acme_domain:
+                acme = {key: value for key, value in {
+                    "domains": args.acme_domain, "email": args.acme_email,
+                    "ca": args.acme_ca, "type": args.acme_type, "dir": args.acme_dir,
+                }.items() if value is not None}
+            all_users = {
+                "k_" + item["id"].replace("-", ""): item["credentials"]["hysteria_password"]
+                for item in store.load().get("access_keys", []) if item.get("state") == "active"
+            }
             endpoint = configure_hysteria(
                 binary=binary,
                 destination=destination,
@@ -1723,13 +1838,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 server=args.server,
                 port=args.port,
                 stats_port=args.stats_port,
-                cert=args.cert,
-                key=args.key,
+                cert=cert,
+                key=key,
                 masquerade=args.masquerade,
                 obfs_type=args.obfs,
+                listen=args.listen, bandwidth_up=args.bandwidth_up,
+                bandwidth_down=args.bandwidth_down, congestion=args.congestion,
+                ignore_client_bandwidth=args.ignore_client_bandwidth,
+                disable_udp=args.disable_udp, udp_idle_timeout=args.udp_idle_timeout,
+                acme=acme, ech_key_path=args.ech_key, ech_config=args.ech_config,
+                existing_users=all_users, allow_insecure=args.insecure,
+                remark=args.remark,
             )
             endpoint["access_key_id"] = access_key["id"]
+            endpoint["node_id"] = target_node
             keys.set_endpoint(access_key["id"], "hysteria2", endpoint)
+            HysteriaManager(store).audit_configuration(target_node, access_key["id"], queued=False)
             message = translator.get("hysteria.configured", path=endpoint["config"])
             message += "\n" + translator.get("hysteria.uri", uri=endpoint["uri"])
             if endpoint["ca_cert"]:
