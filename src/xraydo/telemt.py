@@ -87,17 +87,6 @@ show = [{value(username)}]
 public_host = {value(public_host)}
 public_port = {port}
 
-[network]
-ipv4 = {str(ipv4).lower()}
-ipv6 = {str(ipv6).lower()}
-prefer = {prefer_ip}
-
-[timeouts]
-client_first_byte_idle_secs = {first_byte_timeout}
-client_handshake = {handshake_timeout}
-client_keepalive = {keepalive}
-client_ack = {ack_timeout}
-
 [server]
 port = {port}
 
@@ -105,8 +94,6 @@ port = {port}
 enabled = true
 listen = "127.0.0.1:{api_port}"
 whitelist = ["127.0.0.1/32", "::1/128"]
-auth_header = {value("Bearer " + api_secret)}
-read_only = false
 minimal_runtime_enabled = false
 minimal_runtime_cache_ttl_ms = 1000
 
@@ -114,12 +101,6 @@ minimal_runtime_cache_ttl_ms = 1000
 
 [censorship]
 tls_domain = {value(tls_domain)}
-mask = true
-mask_host = {value(mask_target)}
-mask_port = {mask_port}
-tls_emulation = true
-tls_front_dir = {value(str(data_dir / "tlsfront"))}
-unknown_sni_action = {value(unknown_sni_action)}
 
 [access.users]
 {user_lines}

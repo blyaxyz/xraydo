@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from .access_keys import AccessKeyService
+from .acme import CertbotManager
 from .countries import detect_countries, load_countries
 from .control_plane import ControlPKI, ControlPlaneService, serve_control_plane
 from .health import core_health
@@ -31,11 +32,14 @@ from .reality import (
 from .roles import ROLES, RoleService
 from .services import control_service, core_version, service_logs, service_status
 from .store import Store
+from .state_maintenance import StateMaintenanceService
 from .sync_queue import SyncQueueService, enqueue_node_operation, public_operation
 from .subscriptions import SubscriptionService
 from .subscription_server import serve_https
+from .system_lifecycle import SystemLifecycleService
 from .telemt import configure_telemt
 from .telemt_manager import TelemtManager
+from .terminal_ui import error as render_error, response as render_response
 from .tls_manager import TLSManager
 from .users import UserService
 
@@ -203,6 +207,42 @@ def parser() -> argparse.ArgumentParser:
     admin.add_argument("--actor")
     search = user_commands.add_parser("search")
     search.add_argument("query")
+    user_delete_plan = user_commands.add_parser("delete-plan")
+    user_delete_plan.add_argument("reference")
+    user_delete_plan.add_argument("--grace", default="1d")
+    user_delete = user_commands.add_parser("delete")
+    user_delete.add_argument("reference")
+    user_delete.add_argument("--grace", default="1d")
+    user_delete.add_argument("--actor")
+    user_delete.add_argument("--yes", action="store_true")
+    user_delete_status = user_commands.add_parser("delete-status")
+    user_delete_status.add_argument("reference")
+    user_purge = user_commands.add_parser("purge")
+    user_purge.add_argument("reference")
+    user_purge.add_argument("--actor")
+    user_purge.add_argument("--yes", action="store_true")
+
+    state_store = commands.add_parser("state", help="state integrity and retention")
+    state_commands = state_store.add_subparsers(dest="state_command", required=True)
+    state_compact = state_commands.add_parser("compact")
+    state_compact.add_argument("--dry-run", action="store_true")
+    state_compact.add_argument("--audit-days", type=int)
+    state_compact.add_argument("--usage-days", type=int)
+    state_compact.add_argument("--ip-days", type=int)
+    state_compact.add_argument("--inbound-days", type=int)
+    state_compact.add_argument("--operation-days", type=int)
+    state_compact.add_argument("--max-records", type=int)
+
+    system = commands.add_parser("system", help="install, update, or remove xraydo")
+    system_commands = system.add_subparsers(dest="system_command", required=True)
+    system_status = system_commands.add_parser("status")
+    system_status.add_argument("--installer", type=Path)
+    for lifecycle_action in ("update", "uninstall", "purge"):
+        lifecycle = system_commands.add_parser(lifecycle_action)
+        lifecycle.add_argument("--prefix", type=Path, default=Path("/usr/local"))
+        lifecycle.add_argument("--installer", type=Path)
+        lifecycle.add_argument("--dry-run", action="store_true")
+        lifecycle.add_argument("--yes", action="store_true")
 
     subscription = commands.add_parser("subscription")
     subscription_commands = subscription.add_subparsers(
@@ -272,6 +312,21 @@ def parser() -> argparse.ArgumentParser:
     tls_import.add_argument("--chain", type=Path)
     tls_import.add_argument("--domain", action="append", default=[])
     tls_import.add_argument("--ip", action="append", default=[])
+    for acme_action in ("acme-issue", "acme-renew", "acme-deploy"):
+        acme = tls_commands.add_parser(acme_action)
+        acme.add_argument("--dir", type=Path)
+        acme.add_argument("--identifier", required=True)
+        acme.add_argument("--certbot", type=Path, default=Path("certbot"))
+        acme.add_argument("--cert-name", default="xraydo-subscription")
+        acme.add_argument("--config-dir", type=Path, default=Path("/etc/letsencrypt"))
+        acme.add_argument("--work-dir", type=Path, default=Path("/var/lib/letsencrypt"))
+        acme.add_argument("--logs-dir", type=Path, default=Path("/var/log/letsencrypt"))
+        if acme_action == "acme-issue":
+            acme.add_argument("--email")
+            acme.add_argument("--staging", action="store_true")
+            acme.add_argument("--webroot", type=Path)
+        if acme_action == "acme-renew":
+            acme.add_argument("--dry-run", action="store_true")
     tls_rotate = tls_commands.add_parser("rotate-ca")
     tls_rotate.add_argument("action", choices=("prepare", "activate", "finalize"))
     tls_rotate.add_argument("--dir", type=Path)
@@ -619,7 +674,10 @@ def parser() -> argparse.ArgumentParser:
 
 
 def emit(payload: object, message: str, machine: bool) -> None:
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True) if machine else message)
+    print(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if machine else render_response(message, stream=sys.stdout)
+    )
 
 
 def parse_attributes(values: Sequence[str]) -> dict[str, str]:
@@ -717,7 +775,10 @@ def print_users(users: list[dict[str, object]], translator: Translator) -> None:
         print(translator.get("users.empty"))
     for user in users:
         state = "enabled" if user["enabled"] else "disabled"
-        print(f"{user['id']}  {user['name']}  {translator.get(f'user.state.{state}')}")
+        print(
+            f"#{user['numeric_id']}  {user['id']}  {user['name']}  "
+            f"{translator.get(f'user.state.{state}')}"
+        )
 
 
 def read_secret_file(path: Path) -> str:
@@ -744,7 +805,7 @@ def print_created_qr(
     try:
         print_private_ca_warning(subscriptions.store, translator)
         print(subscriptions.qr(token), end="")
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         print(translator.get(f"error.{str(error)}"), file=sys.stderr)
 
 
@@ -841,6 +902,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return run_interactive(
                 translator,
                 lambda arguments: main(["--lang", translator.language, *arguments]),
+                parser(),
             )
         if args.command == "role":
             if args.role_command == "set":
@@ -1102,7 +1164,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 user, token = service.create(args.name)
                 emit(
                     {"user": user, "subscription_token": token},
-                    translator.get("user.created", name=user["name"], id=user["id"])
+                    translator.get(
+                        "user.created", name=user["name"], id=user["id"],
+                        numeric_id=user["numeric_id"],
+                    )
                     + "\n"
                     + translator.get("user.secret_once", token=token),
                     args.json,
@@ -1126,6 +1191,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     translator.get("user.updated", name=user["name"], state=translator.get(f"user.state.{state}")),
                     args.json,
                 )
+            elif args.user_command == "delete-plan":
+                plan = service.delete_plan(args.reference, parse_duration(args.grace))
+                emit({"plan": plan}, json.dumps(plan, ensure_ascii=False, indent=2), args.json)
+            elif args.user_command == "delete":
+                if not args.yes:
+                    raise ValueError("confirmation_required")
+                deletion = service.request_delete(
+                    args.reference, parse_duration(args.grace), args.actor
+                )
+                emit({"deletion": deletion},
+                     f"User deletion requested: {deletion['user_id']} ({deletion['state']})",
+                     args.json)
+            elif args.user_command == "delete-status":
+                deletion = service.deletion_status(args.reference)
+                emit({"deletion": deletion}, json.dumps(deletion, ensure_ascii=False, indent=2), args.json)
+            elif args.user_command == "purge":
+                if not args.yes:
+                    raise ValueError("confirmation_required")
+                deletion = service.purge(args.reference, args.actor)
+                emit({"deletion": deletion}, f"User credentials purged: {deletion['user_id']}", args.json)
             elif args.user_command == "rename":
                 user = service.rename(args.reference, args.new_name)
                 emit(
@@ -1167,6 +1252,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     emit({"users": users}, "", True)
                 else:
                     print_users(users, translator)
+        elif args.command == "state":
+            if args.state_command == "compact":
+                day_values = {
+                    "audit_log": args.audit_days,
+                    "usage_events": args.usage_days,
+                    "ip_observations": args.ip_days,
+                    "inbound_versions": args.inbound_days,
+                    "node_operations": args.operation_days,
+                }
+                retention = {key: value for key, value in day_values.items() if value is not None}
+                maximum = ({key: args.max_records for key in day_values}
+                           if args.max_records is not None else {})
+                compacted = StateMaintenanceService(store).compact(
+                    dry_run=args.dry_run, retention_days=retention, max_records=maximum
+                )
+                emit({"compaction": compacted}, json.dumps(compacted, ensure_ascii=False), args.json)
+        elif args.command == "system":
+            lifecycle = SystemLifecycleService(args.installer)
+            if args.system_command == "status":
+                result = lifecycle.status()
+                emit({"system": result}, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            else:
+                result = lifecycle.execute(
+                    args.system_command, prefix=args.prefix, dry_run=args.dry_run,
+                    confirmed=args.yes, language=language,
+                )
+                message = result["stdout"]
+                if result["stderr"]:
+                    message += ("\n" if message else "") + result["stderr"]
+                emit({"system": result}, message.rstrip(), args.json)
+                if result["returncode"]:
+                    return int(result["returncode"])
         elif args.command == "subscription":
             if args.subscription_command == "status":
                 status = service.subscription_status(args.user)
@@ -1310,6 +1427,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 emit(
                     {"tls": status},
                     translator.get("tls.renewed", renewed=str(status["renewed"]).lower()),
+                    args.json,
+                )
+            elif args.tls_command in {"acme-issue", "acme-renew", "acme-deploy"}:
+                acme = CertbotManager(
+                    store, certbot=args.certbot, config_dir=args.config_dir,
+                    work_dir=args.work_dir, logs_dir=args.logs_dir,
+                    cert_name=args.cert_name, tls_manager=manager,
+                )
+                if args.tls_command == "acme-issue":
+                    status = acme.issue(
+                        args.identifier, email=args.email, staging=args.staging,
+                        webroot=args.webroot,
+                    )
+                elif args.tls_command == "acme-renew":
+                    status = acme.renew(args.identifier, dry_run=args.dry_run)
+                else:
+                    status = acme.deploy(args.identifier)
+                emit(
+                    {"tls": status},
+                    translator.get("tls.acme_ready", identifier=status["identifier"]),
                     args.json,
                 )
             elif args.tls_command == "export-ca":
@@ -2059,7 +2196,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.json:
             print(json.dumps({"error": {"code": code, "message": translator.get(f"error.{code}")}}, ensure_ascii=False), file=sys.stderr)
         else:
-            print(translator.get(f"error.{code}"), file=sys.stderr)
+            print(render_error(translator.get(f"error.{code}"), stream=sys.stderr), file=sys.stderr)
         return 2
 
 

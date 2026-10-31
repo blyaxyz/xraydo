@@ -7,6 +7,32 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Added
 
+- Let's Encrypt DNS and public-IP certificate issuance, with Certbot 5.4+
+  provisioning through snap where required, HTTP webroot fallback, a twice-daily
+  systemd renewal timer, deploy hook, atomic import, and dependent-service reload.
+- Seven-character user IDs and additional monotonic numeric IDs accepted by
+  every user reference (`12` and `#12`). Schema 10 atomically migrates legacy
+  UUID references across related state while keeping existing subscription
+  tokens valid.
+- Adaptive terminal presentation with colored panels, breadcrumbs, wrapped
+  menu entries, danger highlighting, command/result cards, and structured human
+  responses. `NO_COLOR`, dumb/non-TTY output, narrow terminals, and explicit
+  `XRAYDO_ASCII` fallback are supported without changing JSON output.
+- First-class `xraydo system status/update/uninstall/purge` commands backed by
+  a permission-validated installed lifecycle tool, including dry-run plans and
+  confirmed execution directly from the base menu.
+- A parser-backed “All CLI commands” browser that recursively exposes every
+  leaf command, required value, and arbitrary optional flags, preventing menu
+  coverage from drifting behind the CLI parser.
+- Inter-process state locking, revision compare-and-swap for legacy writers,
+  locked read-modify-write transactions, durable directory fsync, and automatic
+  recovery from a protected `state.json.previous` copy.
+- Two-phase user deletion with an impact plan, atomic user/AccessKey blocking,
+  subscription revocation, per-node operation confirmation, grace period, and
+  explicit credential purge only after access is confirmed blocked everywhere.
+- Value-free audit coverage for user and AccessKey lifecycle/limit changes plus
+  dry-run retention compaction for audit, usage, IP, inbound history, and
+  completed node operations; pending desired state is never compacted.
 - Secure master-to-node control plane with a dedicated node agent, one-time
   expiring bootstrap, private-CA mTLS identities bound to immutable node UUIDs,
   online certificate rotation and immediate application-layer revocation.

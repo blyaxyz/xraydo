@@ -29,14 +29,14 @@ class SubscriptionTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_token_uses_scrypt_and_verifies_without_plaintext_storage(self) -> None:
+    def test_random_token_uses_salted_digest_and_verifies_without_plaintext_storage(self) -> None:
         self.assertEqual(self.users.verify_subscription_token(self.token)["id"], self.user["id"])
         state = self.store.load()
         serialized = json.dumps(state)
         self.assertNotIn(self.token, serialized)
         self.assertNotIn("subscription_token_hash", state["users"][0])
         credential = state["subscription_credentials"][0]
-        self.assertEqual(credential["algorithm"], "scrypt-v1")
+        self.assertEqual(credential["algorithm"], "sha256-v1")
         self.assertNotEqual(credential["digest"], self.token)
 
     def test_rotation_invalidates_old_token_and_audit_contains_no_secret(self) -> None:

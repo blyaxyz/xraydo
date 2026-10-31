@@ -9,7 +9,7 @@ from xraydo.telemt import build_config, configure_telemt, validate_and_install
 
 
 class TelemtTests(unittest.TestCase):
-    def test_config_enables_only_fake_tls_and_secures_api(self) -> None:
+    def test_config_matches_official_fake_tls_shape(self) -> None:
         config = build_config(
             port=8443,
             api_port=9091,
@@ -24,7 +24,8 @@ class TelemtTests(unittest.TestCase):
         self.assertIn("secure = false", config)
         self.assertIn("tls = true", config)
         self.assertIn('listen = "127.0.0.1:9091"', config)
-        self.assertIn('auth_header = "Bearer control-secret"', config)
+        self.assertIn('whitelist = ["127.0.0.1/32", "::1/128"]', config)
+        self.assertNotIn("auth_header", config)
         self.assertNotIn("ad_tag", config)
 
     def test_fake_tls_links_contain_16_byte_secret_and_domain(self) -> None:
@@ -129,10 +130,10 @@ class TelemtTests(unittest.TestCase):
             ack_timeout=45,
         )
         self.assertIn("use_middle_proxy = false", config)
-        self.assertIn("ipv4 = true\nipv6 = true\nprefer = 6", config)
         self.assertIn('ip = "127.0.0.1"', config)
         self.assertIn('ip = "::1"', config)
-        self.assertIn("client_keepalive = 20", config)
+        self.assertNotIn("[network]", config)
+        self.assertNotIn("[timeouts]", config)
 
     def test_multiple_users_and_safe_mask_target_are_written(self) -> None:
         config = build_config(
@@ -144,9 +145,8 @@ class TelemtTests(unittest.TestCase):
         )
         self.assertIn('"k_current" = "' + "01" * 16 + '"', config)
         self.assertIn('"k_existing" = "' + "02" * 16 + '"', config)
-        self.assertIn('mask_host = "127.0.0.1"', config)
-        self.assertIn("mask_port = 8443", config)
-        self.assertIn('unknown_sni_action = "mask"', config)
+        self.assertIn('tls_domain = "front.example"', config)
+        self.assertNotIn("unknown_sni_action", config)
 
     def test_network_options_reject_inconsistent_or_unsafe_values(self) -> None:
         common = {

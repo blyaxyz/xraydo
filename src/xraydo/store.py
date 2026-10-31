@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -11,7 +12,9 @@ import fcntl
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar
 
-CURRENT_SCHEMA_VERSION = 9
+from .user_ids import is_short_user_id, migrated_user_id
+
+CURRENT_SCHEMA_VERSION = 10
 T = TypeVar("T")
 
 
@@ -60,6 +63,7 @@ class Store:
                 "country_auto_flags": True,
                 "role": configured_role(),
                 "node_health": {"failure_threshold": 3, "recovery_threshold": 2},
+                "next_user_numeric_id": 1,
             },
             "users": [],
             "nodes": [],
@@ -257,6 +261,66 @@ class Store:
             data["schema_version"] = 9
             version = 9
             changed = True
+        if version == 9:
+            users = data.setdefault("users", [])
+            used_ids: set[str] = set()
+            used_numbers: set[int] = set()
+            id_map: dict[str, str] = {}
+            next_number = 1
+            for user in users:
+                old_id = str(user.get("id", ""))
+                short_id = old_id if is_short_user_id(old_id) and old_id not in used_ids else None
+                if short_id is None:
+                    short_id = migrated_user_id(old_id, used_ids)
+                used_ids.add(short_id)
+                id_map[old_id] = short_id
+                user["id"] = short_id
+
+                numeric_id = user.get("numeric_id")
+                if not isinstance(numeric_id, int) or isinstance(numeric_id, bool) \
+                        or numeric_id < 1 or numeric_id in used_numbers:
+                    while next_number in used_numbers:
+                        next_number += 1
+                    numeric_id = next_number
+                user["numeric_id"] = numeric_id
+                used_numbers.add(numeric_id)
+                next_number = max(next_number, numeric_id + 1)
+
+            def replace_user_references(value: Any) -> None:
+                if isinstance(value, dict):
+                    for key, item in list(value.items()):
+                        if key == "user_id" and isinstance(item, str) and item in id_map:
+                            value[key] = id_map[item]
+                        elif key == "owner_id" and isinstance(item, str) and item in id_map:
+                            value[key] = id_map[item]
+                        elif key == "object_id" and value.get("object_type") == "user" \
+                                and isinstance(item, str) and item in id_map:
+                            value[key] = id_map[item]
+                        else:
+                            replace_user_references(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        replace_user_references(item)
+
+            for credential in data.setdefault("subscription_credentials", []):
+                old_user_id = credential.get("user_id")
+                if isinstance(old_user_id, str) and old_user_id in id_map \
+                        and id_map[old_user_id] != old_user_id:
+                    credential.setdefault(
+                        "token_user_id_digest",
+                        hashlib.sha256(old_user_id.encode()).hexdigest(),
+                    )
+            replace_user_references(data)
+            settings = data.setdefault("settings", {})
+            configured_next = settings.get("next_user_numeric_id")
+            settings["next_user_numeric_id"] = max(
+                next_number,
+                configured_next if isinstance(configured_next, int)
+                and not isinstance(configured_next, bool) else 1,
+            )
+            data["schema_version"] = 10
+            version = 10
+            changed = True
         if "audit_log" not in data:
             data["audit_log"] = []
             changed = True
@@ -306,14 +370,26 @@ class Store:
             return self.initial(), False
         try:
             data = self._read_path(self.path)
-            return self.migrate(data)
-        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+        except (OSError, ValueError, json.JSONDecodeError) as error:
             if not recover or not self.backup_path.is_file():
-                raise RuntimeError("state_corrupt") from error
+                raise ValueError("state_corrupt") from error
             try:
                 backup, changed = self.migrate(self._read_path(self.backup_path))
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as backup_error:
-                raise RuntimeError("state_corrupt") from backup_error
+                raise ValueError("state_corrupt") from backup_error
+            self._write_unlocked(backup, keep_backup=False)
+            return backup, changed
+        try:
+            return self.migrate(data)
+        except RuntimeError as error:
+            if str(error) == "unsupported state schema":
+                raise
+            if not recover or not self.backup_path.is_file():
+                raise ValueError("state_corrupt") from error
+            try:
+                backup, changed = self.migrate(self._read_path(self.backup_path))
+            except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as backup_error:
+                raise ValueError("state_corrupt") from backup_error
             self._write_unlocked(backup, keep_backup=False)
             return backup, changed
 
@@ -332,7 +408,7 @@ class Store:
             expected = int(data.get("state_revision", 0))
             actual = int(current.get("state_revision", 0))
             if expected != actual:
-                raise RuntimeError("state_conflict")
+                raise ValueError("state_conflict")
             data["state_revision"] = actual + 1
             self._write_unlocked(data)
 

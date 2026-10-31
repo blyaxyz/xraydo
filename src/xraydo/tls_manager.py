@@ -469,7 +469,10 @@ authorityKeyIdentifier = keyid:always
         ips: list[str],
         ca_cert: Optional[Path] = None,
         chain: Optional[Path] = None,
+        source: str = "import",
     ) -> dict[str, Any]:
+        if source not in {"import", "certbot"}:
+            raise ValueError("tls_certificate_invalid")
         normalized_domains = sorted({_domain(value) for value in domains})
         try:
             normalized_ips = sorted({str(ipaddress.ip_address(value)) for value in ips})
@@ -532,7 +535,7 @@ authorityKeyIdentifier = keyid:always
                 tls_context(destination_cert, destination_key, host)
             metadata = {
                 "managed": False,
-                "source": "import",
+                "source": source,
                 "domains": normalized_domains,
                 "ips": normalized_ips,
                 "expires_at": expires,

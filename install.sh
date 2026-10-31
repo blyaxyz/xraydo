@@ -65,6 +65,10 @@ FIRST_USER_TRAFFIC="100GB"
 FIRST_USER_DURATION="30d"
 FIRST_USER_IPS="2"
 PUBLIC_HOST=""
+ACME_EMAIL=""
+REALITY_TARGET="ya.ru"
+TELEMT_PORT="8443"
+TELEMT_TLS_DOMAIN="vk.com"
 UTLS_PROFILE="firefox"
 HYSTERIA_ECH="off"
 PACKAGE_MANAGER=""
@@ -97,6 +101,10 @@ Options:
   --user-name NAME      First user name (default: default)
   --limits PROFILE      recommended, unlimited, or custom
   --public-host HOST    Public IPv4/IPv6 or DNS name for client links
+  --acme-email EMAIL    Let's Encrypt account email (recommended)
+  --reality-target HOST REALITY target and SNI (default: ya.ru)
+  --telemt-port PORT    Telemt public port (default: 8443)
+  --telemt-tls-domain D Fake TLS domain for Telemt (default: vk.com)
   --utls PROFILE        REALITY uTLS profile (default: firefox)
   --hysteria-ech NAME   Generate ECH keys with this public/decoy name
   --dry-run             Print the complete plan without changing the system
@@ -139,6 +147,10 @@ load_answers() {
             FIRST_USER_DURATION) FIRST_USER_DURATION="$value" ;;
             FIRST_USER_IPS) FIRST_USER_IPS="$value" ;;
             PUBLIC_HOST) PUBLIC_HOST="$value" ;;
+            ACME_EMAIL) ACME_EMAIL="$value" ;;
+            REALITY_TARGET) REALITY_TARGET="$value" ;;
+            TELEMT_PORT) TELEMT_PORT="$value" ;;
+            TELEMT_TLS_DOMAIN) TELEMT_TLS_DOMAIN="$value" ;;
             UTLS_PROFILE) UTLS_PROFILE="$value" ;;
             HYSTERIA_ECH) HYSTERIA_ECH="$value" ;;
             *) fail "unknown answer-file key: $key" ;;
@@ -200,6 +212,18 @@ while (($#)); do
         --public-host)
             (($# >= 2)) || fail "--public-host requires a value"
             PUBLIC_HOST="$2"; shift 2 ;;
+        --acme-email)
+            (($# >= 2)) || fail "--acme-email requires a value"
+            ACME_EMAIL="$2"; shift 2 ;;
+        --reality-target)
+            (($# >= 2)) || fail "--reality-target requires a host"
+            REALITY_TARGET="$2"; shift 2 ;;
+        --telemt-port)
+            (($# >= 2)) || fail "--telemt-port requires a value"
+            TELEMT_PORT="$2"; shift 2 ;;
+        --telemt-tls-domain)
+            (($# >= 2)) || fail "--telemt-tls-domain requires a domain"
+            TELEMT_TLS_DOMAIN="$2"; shift 2 ;;
         --utls)
             (($# >= 2)) || fail "--utls requires a profile"
             UTLS_PROFILE="$2"; shift 2 ;;
@@ -233,6 +257,10 @@ fi
 [[ "$UTLS_PROFILE" =~ ^(firefox|chrome|safari|ios|android|edge|360|qq|random|randomized|randomizednoalpn)$ ]] || fail "unsupported uTLS profile: $UTLS_PROFILE"
 [[ "$HYSTERIA_ECH" == "off" || "$HYSTERIA_ECH" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "invalid Hysteria ECH public name"
 [[ -z "$PUBLIC_HOST" || "$PUBLIC_HOST" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || fail "invalid public host"
+[[ -z "$ACME_EMAIL" || "$ACME_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "invalid ACME email"
+[[ "$REALITY_TARGET" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "invalid REALITY target"
+[[ "$TELEMT_TLS_DOMAIN" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "invalid Telemt TLS domain"
+[[ "$TELEMT_PORT" =~ ^[0-9]+$ ]] && ((TELEMT_PORT >= 1 && TELEMT_PORT <= 65535)) || fail "invalid Telemt port"
 [[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" =~ ^(install|uninstall|purge)$ ]] || fail "invalid installer action"
 [[ "$(uname -s)" == "Linux" ]] || fail "only Linux is supported"
 
@@ -278,7 +306,7 @@ safe_remove_tree() {
 
 remove_service_units() {
     local service
-    local services=(xraydo-xray xraydo-hysteria xraydo-telemt xraydo-tls-renew xraydo-subscription)
+    local services=(xraydo-xray xraydo-hysteria xraydo-telemt xraydo-tls-renew xraydo-certbot-renew xraydo-subscription)
     [[ "$PREFIX" == "/usr/local" ]] || return 0
     if command -v systemctl >/dev/null 2>&1; then
         for service in "${services[@]}"; do
@@ -518,6 +546,41 @@ if [[ "$PROFILE" == "advanced" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
     esac
 fi
 
+if [[ "$ROLE" != "node" && "$TLS_MODE" != "private-ca" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+    if [[ -z "$PUBLIC_HOST" ]]; then
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            read -r -p 'Домен для Let’s Encrypt (Enter = сертификат на публичный IP): ' PUBLIC_HOST
+        else
+            read -r -p "Let's Encrypt domain (Enter = certificate for the public IP): " PUBLIC_HOST
+        fi
+    fi
+    if [[ -n "$PUBLIC_HOST" && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$PUBLIC_HOST" != *:* ]]; then
+        TLS_MODE="domain"
+    else
+        TLS_MODE="public-ip"
+    fi
+    if [[ -z "$ACME_EMAIL" ]]; then
+        read -r -p "Let's Encrypt email / Email Let's Encrypt (optional): " ACME_EMAIL
+    fi
+fi
+
+if [[ "$TLS_MODE" == "auto" ]]; then
+    if [[ -n "$PUBLIC_HOST" && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$PUBLIC_HOST" != *:* ]]; then
+        TLS_MODE="domain"
+    else
+        TLS_MODE="public-ip"
+    fi
+fi
+
+if [[ ",$CORES," == *,telemt,* && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+    read -r -p "Telemt port / Порт Telemt [$TELEMT_PORT]: " custom_telemt_port
+    read -r -p "Telemt TLS domain / TLS-домен Telemt [$TELEMT_TLS_DOMAIN]: " custom_telemt_domain
+    TELEMT_PORT="${custom_telemt_port:-$TELEMT_PORT}"
+    TELEMT_TLS_DOMAIN="${custom_telemt_domain:-$TELEMT_TLS_DOMAIN}"
+    [[ "$TELEMT_PORT" =~ ^[0-9]+$ ]] && ((TELEMT_PORT >= 1 && TELEMT_PORT <= 65535)) || fail "invalid Telemt port"
+    [[ "$TELEMT_TLS_DOMAIN" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "invalid Telemt TLS domain"
+fi
+
 if [[ -z "$FIRST_USER_MODE" ]]; then
     if [[ "$ROLE" == "node" ]]; then
         FIRST_USER_MODE="skip"
@@ -651,6 +714,24 @@ fi
 if [[ ! -d /etc/ssl/certs ]]; then
     REQUIRED_PACKAGES+=(ca-certificates)
 fi
+certbot_ip_capable() {
+    local binary="${1:-certbot}" version major minor
+    [[ "$binary" == */* ]] || binary="$(command -v "$binary" 2>/dev/null || true)"
+    [[ -n "$binary" && -x "$binary" ]] || return 1
+    version="$($binary --version 2>&1 | awk '{print $NF}' | head -n 1)"
+    major="${version%%.*}"
+    minor="${version#*.}"; minor="${minor%%.*}"
+    [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+    ((major > 5 || (major == 5 && minor >= 4)))
+}
+
+CERTBOT_PATH="$(command -v certbot 2>/dev/null || true)"
+if [[ "$TLS_MODE" == "domain" && -z "$CERTBOT_PATH" ]]; then
+    REQUIRED_PACKAGES+=(certbot)
+elif [[ "$TLS_MODE" == "public-ip" ]] && ! certbot_ip_capable "${CERTBOT_PATH:-certbot}"; then
+    [[ "$PACKAGE_MANAGER" != "apk" ]] || fail "public IP certificates require Certbot 5.4+; snap is unavailable on Alpine"
+    command -v snap >/dev/null 2>&1 || REQUIRED_PACKAGES+=(snapd)
+fi
 
 packages_display="none"
 if ((${#REQUIRED_PACKAGES[@]})); then
@@ -741,7 +822,7 @@ if port_in_use tcp 443; then
 fi
 xray_port="$(next_free_port tcp 443)"
 hysteria_port="$(next_free_port udp 1935)"
-telemt_port="$(next_free_port tcp 8443)"
+telemt_port="$(next_free_port tcp "$TELEMT_PORT")"
 subscription_port="$(next_free_port tcp 8444)"
 hysteria_stats_port="$(next_free_port tcp 9999)"
 telemt_api_port="$(next_free_port tcp 9091)"
@@ -756,6 +837,7 @@ printf '  SHA-256: %s\n' "$XRAYDO_ARCHIVE_SHA256"
 printf '  %s: %s\n' "$PREFIX_LABEL" "$PREFIX"
 printf '  %s: %s\n' "$CORES_LABEL" "$CORES"
 printf '  TLS: %s\n' "$TLS_MODE"
+[[ "$TLS_MODE" != "private-ca" ]] && printf '    ACME email: %s\n' "${ACME_EMAIL:-not provided}"
 printf '  Init: %s\n' "$INIT_SYSTEM"
 if [[ "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
     printf '  Core autostart / Автозапуск ядер: enabled (%s)\n' "$INIT_SYSTEM"
@@ -764,11 +846,12 @@ printf '  Security / Защита: %s (unchanged)\n' "$security_modules"
 printf '  RAM available / Доступно RAM: %s MB\n' "$memory_mb"
 printf '  Disk available / Доступно диска: %s MB\n' "$disk_available_mb"
 [[ ",$CORES," == *,xray,* ]] && printf '  Xray REALITY: TCP %s\n' "$xray_port"
+[[ ",$CORES," == *,xray,* ]] && printf '    REALITY target/SNI: %s\n' "$REALITY_TARGET"
 if [[ -n "$tcp_443_conflict" ]]; then
     printf '    TCP 443 occupied / занят: %s; selected / выбран: TCP %s\n' "$tcp_443_conflict" "$xray_port"
 fi
 [[ ",$CORES," == *,hysteria,* ]] && printf '  Hysteria 2: UDP %s\n' "$hysteria_port"
-[[ ",$CORES," == *,telemt,* ]] && printf '  Telemt: TCP %s\n' "$telemt_port"
+[[ ",$CORES," == *,telemt,* ]] && printf '  Telemt: TCP %s; TLS domain: %s\n' "$telemt_port" "$TELEMT_TLS_DOMAIN"
 if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     printf '  First user / Первый пользователь: %s (%s)\n' "$FIRST_USER_NAME" "$FIRST_USER_MODE"
     if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
@@ -822,6 +905,34 @@ install_system_packages() {
 }
 
 install_system_packages
+
+ensure_certbot() {
+    if [[ "$TLS_MODE" == "private-ca" ]]; then
+        return 0
+    fi
+    if [[ "$TLS_MODE" == "domain" ]]; then
+        CERTBOT_PATH="$(command -v certbot 2>/dev/null || true)"
+        [[ -n "$CERTBOT_PATH" ]] || fail "Certbot installation failed"
+        return 0
+    fi
+    if certbot_ip_capable "${CERTBOT_PATH:-certbot}"; then
+        CERTBOT_PATH="$(command -v "${CERTBOT_PATH:-certbot}")"
+        return 0
+    fi
+    [[ "$INIT_SYSTEM" == "systemd" ]] || fail "Certbot 5.4+ IP certificates require systemd/snap on this platform"
+    command -v snap >/dev/null 2>&1 || fail "snapd is unavailable after package installation"
+    root_exec systemctl enable --now snapd.socket >/dev/null
+    root_exec snap wait system seed.loaded
+    if ! root_exec snap list certbot >/dev/null 2>&1; then
+        root_exec snap install certbot --classic
+    else
+        root_exec snap refresh certbot
+    fi
+    CERTBOT_PATH="/snap/bin/certbot"
+    certbot_ip_capable "$CERTBOT_PATH" || fail "Certbot 5.4 or newer is required for public IP certificates"
+}
+
+ensure_certbot
 
 for required_command in python3 curl tar install qrencode; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command is unavailable after package installation: $required_command"
@@ -911,6 +1022,10 @@ if compgen -G "$SOURCE_DIR/src/xraydo/data/*.json" >/dev/null; then
     install_exec install -m 0644 "$SOURCE_DIR"/src/xraydo/data/*.json "$LIBRARY_DIR/xraydo/data/"
 fi
 install_exec install -m 0644 "$SOURCE_DIR/LICENSE" "$SOURCE_DIR/THIRD_PARTY_NOTICES.md" "$DOCUMENTATION_DIR/"
+stable_installer="$PREFIX/lib/xraydo/install.sh"
+if [[ ! -e "$stable_installer" || "$(readlink -f "$0")" != "$(readlink -f "$stable_installer")" ]]; then
+    install_exec install -m 0755 "$0" "$stable_installer"
+fi
 
 wrapper_path="$TEMP_DIR/xraydo-wrapper"
 printf '#!/usr/bin/env bash\nXRAYDO_CONFIG=%q XRAYDO_DATA_DIR=%q PYTHONPATH=%q exec python3 -m xraydo.cli "$@"\n' \
@@ -1020,6 +1135,10 @@ write_systemd_unit() {
     local config_file="$4"
     local data_dir="$5"
     local unit="$TEMP_DIR/xraydo-$core.service"
+    local capabilities="CAP_NET_BIND_SERVICE"
+    if [[ "$core" == "telemt" ]]; then
+        capabilities="CAP_NET_BIND_SERVICE CAP_NET_ADMIN"
+    fi
     cat > "$unit" <<EOF
 [Unit]
 Description=xraydo managed $core service
@@ -1035,6 +1154,7 @@ ExecStart=$command_line
 WorkingDirectory=$data_dir
 Restart=on-failure
 RestartSec=5s
+LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1043,8 +1163,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 ReadWritePaths=$data_dir /var/log/xraydo/$core
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=$capabilities
+CapabilityBoundingSet=$capabilities
 
 [Install]
 WantedBy=multi-user.target
@@ -1162,6 +1282,67 @@ EOF
     fi
 }
 
+provision_certbot_renewer() {
+    local hook_dir="/etc/letsencrypt/renewal-hooks/deploy"
+    local hook="$TEMP_DIR/xraydo-certbot-deploy"
+    local cert="$DATA_DIR/tls/leaf/current/server.crt"
+    local key="$DATA_DIR/tls/leaf/current/server.key"
+    cat > "$hook" <<EOF
+#!/bin/sh
+set -eu
+$BINARY_PATH --json tls acme-deploy --identifier '$PUBLIC_HOST' --certbot '$CERTBOT_PATH'
+if [ -d '$CONFIG_DIR/cores/hysteria/pki' ]; then
+    install -m 0644 '$cert' '$CONFIG_DIR/cores/hysteria/pki/server.crt'
+    install -m 0640 '$key' '$CONFIG_DIR/cores/hysteria/pki/server.key'
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl try-restart xraydo-subscription.service >/dev/null 2>&1 || true
+    systemctl try-restart xraydo-hysteria.service >/dev/null 2>&1 || true
+elif command -v rc-service >/dev/null 2>&1; then
+    rc-service xraydo-subscription restart >/dev/null 2>&1 || true
+    rc-service xraydo-hysteria restart >/dev/null 2>&1 || true
+fi
+EOF
+    root_exec install -d -m 0755 "$hook_dir"
+    root_exec install -m 0755 "$hook" "$hook_dir/xraydo"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        local service="$TEMP_DIR/xraydo-certbot-renew.service"
+        local timer="$TEMP_DIR/xraydo-certbot-renew.timer"
+        cat > "$service" <<EOF
+[Unit]
+Description=Renew xraydo Let's Encrypt certificate with Certbot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$CERTBOT_PATH renew --cert-name xraydo-subscription --quiet
+EOF
+        cat > "$timer" <<'EOF'
+[Unit]
+Description=Twice-daily xraydo Certbot renewal check
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+        root_exec install -m 0644 "$service" /etc/systemd/system/xraydo-certbot-renew.service
+        root_exec install -m 0644 "$timer" /etc/systemd/system/xraydo-certbot-renew.timer
+    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        local cron="$TEMP_DIR/xraydo-certbot-renew"
+        cat > "$cron" <<EOF
+#!/bin/sh
+$CERTBOT_PATH renew --cert-name xraydo-subscription --quiet
+EOF
+        root_exec install -d -m 0755 /etc/periodic/12hourly
+        root_exec install -m 0755 "$cron" /etc/periodic/12hourly/xraydo-certbot-renew
+    fi
+}
+
 provision_subscription_service() {
     local cert="$DATA_DIR/tls/leaf/current/server.crt"
     local key="$DATA_DIR/tls/leaf/current/server.key"
@@ -1267,23 +1448,36 @@ XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" tls renew-daemon --once 
 [[ ",$CORES," == *,hysteria,* ]] && quiet_root "Hysteria version health-check" "$PREFIX/bin/hysteria" version
 [[ ",$CORES," == *,telemt,* ]] && quiet_root "Telemt version health-check" "$PREFIX/bin/telemt" --version
 
+# ACME hooks and service units must be rendered with the final public identifier.
+[[ "$FIRST_USER_MODE" == "skip" ]] || detect_public_host
+
 if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     [[ ",$CORES," == *,xray,* ]] && provision_core_service xray "$PREFIX/bin/xray" "run -config $CONFIG_DIR/cores/xray/config.json" config.json
     [[ ",$CORES," == *,hysteria,* ]] && provision_core_service hysteria "$PREFIX/bin/hysteria" "server -c $CONFIG_DIR/cores/hysteria/config.yaml" config.yaml
     [[ ",$CORES," == *,telemt,* ]] && provision_core_service telemt "$PREFIX/bin/telemt" "$CONFIG_DIR/cores/telemt/telemt.toml" telemt.toml
-    provision_tls_renewer
+    if [[ "$TLS_MODE" == "private-ca" ]]; then
+        provision_tls_renewer
+    else
+        provision_certbot_renewer
+    fi
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         root_exec systemctl daemon-reload
         [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
         [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
         [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
+        if [[ "$TLS_MODE" == "private-ca" ]]; then
+            root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
+        else
+            root_exec systemctl enable --now xraydo-certbot-renew.timer >/dev/null
+        fi
     else
         [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
         [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
         [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        root_exec rc-update add xraydo-tls-renew default >/dev/null
-        root_exec rc-service xraydo-tls-renew start >/dev/null
+        if [[ "$TLS_MODE" == "private-ca" ]]; then
+            root_exec rc-update add xraydo-tls-renew default >/dev/null
+            root_exec rc-service xraydo-tls-renew start >/dev/null
+        fi
     fi
 fi
 
@@ -1299,17 +1493,21 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     [[ "$url_host" == *:* && "$url_host" != \[*\] ]] && url_host="[$url_host]"
     subscription_base="https://$url_host:$subscription_port"
 
-    quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
-    if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        if ! quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST"; then
-            managed_leaf_matches_public_host || fail "TLS certificate issuance failed"
-            printf 'Warning: TLS CLI reporting failed after issuance; verified certificate SAN and continuing.\n' >&2
+    if [[ "$TLS_MODE" == "private-ca" ]]; then
+        quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
+        if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
+        else
+            quiet_root "server DNS certificate" "$BINARY_PATH" --json tls issue-self --domain "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
         fi
     else
-        if ! quiet_root "server DNS certificate" "$BINARY_PATH" --json tls issue-self --domain "$PUBLIC_HOST"; then
-            managed_leaf_matches_public_host || fail "TLS certificate issuance failed"
-            printf 'Warning: TLS CLI reporting failed after issuance; verified certificate SAN and continuing.\n' >&2
+        acme_args=(--identifier "$PUBLIC_HOST" --certbot "$CERTBOT_PATH")
+        [[ -z "$ACME_EMAIL" ]] || acme_args+=(--email "$ACME_EMAIL")
+        if port_in_use tcp 80; then
+            [[ -d /var/www/html ]] || fail "TCP port 80 is occupied by $(port_owner 80), and /var/www/html is unavailable for ACME webroot"
+            acme_args+=(--webroot /var/www/html)
         fi
+        quiet_root "Let's Encrypt certificate" "$BINARY_PATH" --json tls acme-issue "${acme_args[@]}" || fail "Let's Encrypt certificate issuance failed"
     fi
     quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
 
@@ -1340,6 +1538,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     if [[ ",$CORES," == *,xray,* ]]; then
         if quiet_root "Xray REALITY validation" "$BINARY_PATH" --json core reality \
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --listen-port "$xray_port" \
+            --target "$REALITY_TARGET" --sni "$REALITY_TARGET" \
             --fingerprint "$UTLS_PROFILE" --config "$CONFIG_DIR/cores/xray/config.json"; then
             if start_core_service xray; then xray_state="configured and healthy"; else xray_state="configured; service health failed"; fi
         else
@@ -1390,7 +1589,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     if [[ ",$CORES," == *,telemt,* ]]; then
         if quiet_root "Telemt configuration validation" "$BINARY_PATH" --json core telemt \
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$telemt_port" \
-            --api-port "$telemt_api_port" --config "$CONFIG_DIR/cores/telemt/telemt.toml"; then
+            --api-port "$telemt_api_port" --tls-domain "$TELEMT_TLS_DOMAIN" \
+            --config "$CONFIG_DIR/cores/telemt/telemt.toml"; then
             if start_core_service telemt; then telemt_state="configured and healthy"; else telemt_state="configured; service health failed"; fi
         else
             telemt_state="failed; endpoint not published"
@@ -1421,7 +1621,11 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
             {
                 printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
-                printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                if [[ "$TLS_MODE" == "private-ca" ]]; then
+                    printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                else
+                    printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
+                fi
                 [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
                 printf '\nSubscription QR:\n'
             } >/dev/tty
@@ -1434,7 +1638,11 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             credentials_tmp="$TEMP_DIR/bootstrap.txt"
             (umask 077; {
                 printf 'HTTPS subscription: %s\n' "$subscription_url"
-                printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                if [[ "$TLS_MODE" == "private-ca" ]]; then
+                    printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                else
+                    printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
+                fi
                 [[ -z "$mtproto_link" ]] || printf 'MTProto: %s\n' "$mtproto_link"
             } >"$credentials_tmp")
             root_exec install -m 0600 "$credentials_tmp" "$credentials_file"

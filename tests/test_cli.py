@@ -40,8 +40,33 @@ class CliTests(unittest.TestCase):
         listed = run_cli(self.path, "--json", "user", "list")
         users = json.loads(listed.stdout)["users"]
         self.assertEqual(users[0]["name"], "alice")
+        self.assertRegex(users[0]["id"], r"^[23456789A-HJ-NP-Z]{7}$")
+        self.assertEqual(users[0]["numeric_id"], 1)
         self.assertNotIn(token, (self.path / "data" / "state.json").read_text())
+        state = json.loads((self.path / "data" / "state.json").read_text())
+        self.assertEqual(state["subscription_credentials"][0]["algorithm"], "sha256-v1")
         self.assertEqual((self.path / "data" / "state.json").stat().st_mode & 0o777, 0o600)
+
+    def test_users_can_be_addressed_by_short_and_numeric_id(self) -> None:
+        first = json.loads(
+            run_cli(self.path, "--json", "user", "create", "alice").stdout
+        )["user"]
+        second = json.loads(
+            run_cli(self.path, "--json", "user", "create", "bob").stdout
+        )["user"]
+        self.assertEqual((first["numeric_id"], second["numeric_id"]), (1, 2))
+        by_number = json.loads(
+            run_cli(self.path, "--json", "user", "show", "1").stdout
+        )["user"]
+        by_short_id = json.loads(
+            run_cli(self.path, "--json", "user", "show", second["id"].lower()).stdout
+        )["user"]
+        by_hash_number = json.loads(
+            run_cli(self.path, "--json", "user", "show", "#2").stdout
+        )["user"]
+        self.assertEqual(by_number["id"], first["id"])
+        self.assertEqual(by_short_id["numeric_id"], 2)
+        self.assertEqual(by_hash_number["id"], second["id"])
 
     def test_subscription_rotation_and_revocation_cli(self) -> None:
         created = json.loads(run_cli(self.path, "--json", "user", "create", "alice").stdout)
@@ -484,6 +509,46 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(revoked.returncode, 0, revoked.stderr)
         self.assertFalse(json.loads(revoked.stdout)["revocation"]["trusted"])
+
+    def test_user_delete_lifecycle_and_state_compaction_cli(self) -> None:
+        node = run_cli(self.path, "--json", "node", "add", "edge")
+        self.assertEqual(node.returncode, 0, node.stderr)
+        created = json.loads(
+            run_cli(self.path, "--json", "user", "create", "alice").stdout
+        )["user"]
+        planned = run_cli(
+            self.path, "--json", "user", "delete-plan", "alice", "--grace", "1d"
+        )
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertEqual(json.loads(planned.stdout)["plan"]["user_id"], created["id"])
+        refused = run_cli(self.path, "--json", "user", "delete", "alice", "--grace", "1d")
+        self.assertEqual(refused.returncode, 2)
+        requested = run_cli(
+            self.path, "--json", "user", "delete", "alice", "--grace", "1d", "--yes"
+        )
+        self.assertEqual(requested.returncode, 0, requested.stderr)
+        status = run_cli(self.path, "--json", "user", "delete-status", created["id"])
+        self.assertEqual(json.loads(status.stdout)["deletion"]["state"], "blocking")
+        preview = run_cli(self.path, "--json", "state", "compact", "--dry-run")
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertTrue(json.loads(preview.stdout)["compaction"]["dry_run"])
+
+    def test_system_update_dry_run_is_available_from_xraydo_cli(self) -> None:
+        installer = self.path / "installer.sh"
+        installer.write_text(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.2.3; "
+            "else printf '%s\\n' \"$*\"; fi\n",
+            encoding="utf-8",
+        )
+        os.chmod(installer, 0o700)
+        result = run_cli(
+            self.path, "--json", "system", "update", "--dry-run",
+            "--prefix", str(self.path / "prefix"), "--installer", str(installer),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)["system"]
+        self.assertEqual(payload["action"], "update")
+        self.assertIn("--update", payload["stdout"])
 
     def test_inbound_import_list_show_edit_history_and_bulk_plan(self) -> None:
         config_file = self.path / "xray.json"

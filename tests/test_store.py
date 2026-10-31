@@ -20,12 +20,12 @@ class StoreTests(unittest.TestCase):
             legacy = {"settings": {"language": "ru"}, "users": [], "custom": "keep"}
             (root / "state.json").write_text(json.dumps(legacy), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertEqual(state["nodes"], [])
             self.assertTrue(state["settings"]["country_auto_flags"])
             self.assertEqual(state["custom"], "keep")
             persisted = json.loads((root / "state.json").read_text(encoding="utf-8"))
-            self.assertEqual(persisted["schema_version"], 9)
+            self.assertEqual(persisted["schema_version"], 10)
 
     def test_future_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -33,6 +33,9 @@ class StoreTests(unittest.TestCase):
             (root / "state.json").write_text('{"schema_version": 999}', encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "unsupported state schema"):
                 Store(root).load()
+            self.assertEqual(
+                json.loads((root / "state.json").read_text())["schema_version"], 999
+            )
 
     def test_schema_one_adds_nodes_and_country_setting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -44,8 +47,9 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
-            self.assertEqual(state["users"][0]["id"], "preserved")
+            self.assertEqual(state["schema_version"], 10)
+            self.assertEqual(len(state["users"][0]["id"]), 7)
+            self.assertEqual(state["users"][0]["numeric_id"], 1)
             self.assertEqual(state["users"][0]["subscription_state"], "revoked")
             self.assertEqual(state["nodes"], [])
             self.assertTrue(state["settings"]["country_auto_flags"])
@@ -74,7 +78,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertNotIn("credentials", state["users"][0])
             key = state["access_keys"][0]
             self.assertEqual(key["credentials"]["xray_uuid"], "xray-preserved")
@@ -94,7 +98,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertEqual(state["node_operations"], [])
             self.assertTrue(state["nodes"][0]["enabled"])
             self.assertEqual(state["nodes"][0]["connection_state"], "offline")
@@ -113,7 +117,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertEqual(state["settings"]["role"], "standalone")
             self.assertEqual(state["nodes"][0]["connection_state"], "healthy")
 
@@ -131,7 +135,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertEqual(state["ip_observations"], [])
             quota = state["access_keys"][0]["quota"]
             self.assertEqual(quota["ip_window_seconds"], 300)
@@ -158,7 +162,7 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
+            self.assertEqual(state["schema_version"], 10)
             self.assertNotIn("subscription_token_hash", state["users"][0])
             credential = state["subscription_credentials"][0]
             self.assertEqual(credential["algorithm"], "sha256-legacy")
@@ -183,5 +187,51 @@ class StoreTests(unittest.TestCase):
             }
             (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
             state = Store(root).load()
-            self.assertEqual(state["schema_version"], 9)
-            self.assertEqual(state["node_operations"][0]["owner_id"], "user-1")
+            self.assertEqual(state["schema_version"], 10)
+            migrated_id = state["users"][0]["id"]
+            self.assertEqual(state["node_operations"][0]["owner_id"], migrated_id)
+            self.assertEqual(state["node_operations"][0]["payload"]["user_id"], migrated_id)
+
+    def test_schema_nine_replaces_uuid_user_ids_and_preserves_old_tokens(self) -> None:
+        import hashlib
+
+        from xraydo.users import UserService
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_id = "023dd7dc-e71c-46d6-be2e-4b972de4c08d"
+            token = old_id + ".existing-secret"
+            original = {
+                "schema_version": 9,
+                "settings": {},
+                "users": [{
+                    "id": old_id, "name": "alice", "enabled": True,
+                    "subscription_state": "active",
+                }],
+                "access_keys": [{"id": "key-1", "user_id": old_id}],
+                "subscription_credentials": [{
+                    "user_id": old_id, "algorithm": "sha256-legacy", "salt": None,
+                    "digest": hashlib.sha256(token.encode()).hexdigest(),
+                    "revoked_at": None,
+                }],
+                "node_operations": [{
+                    "owner_id": old_id, "payload": {"user_id": old_id},
+                }],
+                "audit_log": [{"object_type": "user", "object_id": old_id}],
+                "user_deletions": [{"user_id": old_id}],
+            }
+            (root / "state.json").write_text(json.dumps(original), encoding="utf-8")
+            store = Store(root)
+            state = store.load()
+            user = state["users"][0]
+            self.assertEqual(state["schema_version"], 10)
+            self.assertRegex(user["id"], r"^[23456789A-HJ-NP-Z]{7}$")
+            self.assertEqual(user["numeric_id"], 1)
+            self.assertNotEqual(user["id"], old_id)
+            self.assertEqual(state["access_keys"][0]["user_id"], user["id"])
+            self.assertEqual(state["subscription_credentials"][0]["user_id"], user["id"])
+            self.assertEqual(state["node_operations"][0]["owner_id"], user["id"])
+            self.assertEqual(state["audit_log"][0]["object_id"], user["id"])
+            self.assertEqual(state["user_deletions"][0]["user_id"], user["id"])
+            self.assertNotIn(old_id, json.dumps(state))
+            self.assertEqual(UserService(store).verify_subscription_token(token)["id"], user["id"])

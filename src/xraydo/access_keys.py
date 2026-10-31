@@ -7,6 +7,7 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from .audit import append_audit
 from .store import Store
 from .sync_queue import enqueue_access_key
 
@@ -124,6 +125,8 @@ class AccessKeyService:
         key = new_access_key(user_id, device_name)
         data["access_keys"].append(key)
         enqueue_access_key(data, key)
+        append_audit(data, action="access_key.create", object_type="access_key",
+                     object_id=key["id"], fields=["user_id", "device_name", "state"])
         self.store.save(data)
         return key
 
@@ -170,17 +173,8 @@ class AccessKeyService:
         if state == "active":
             self._evaluate(key, datetime.now(timezone.utc))
             self._evaluate_ip_limit(data, key, datetime.now(timezone.utc))
-        data.setdefault("audit_log", []).append(
-            {
-                "id": str(uuid.uuid4()),
-                "timestamp": key["updated_at"],
-                "actor": "local-admin",
-                "action": f"access_key.{state}",
-                "object_type": "access_key",
-                "object_id": key["id"],
-                "fields": ["state", "disabled_reason"],
-            }
-        )
+        append_audit(data, action=f"access_key.{state}", object_type="access_key",
+                     object_id=key["id"], fields=["state", "disabled_reason"])
         enqueue_access_key(data, key, "revoke" if state == "revoked" else "upsert")
         self.store.save(data)
         return key
@@ -193,6 +187,8 @@ class AccessKeyService:
         key.setdefault("endpoints", {})[protocol] = endpoint
         key["updated_at"] = _now()
         enqueue_access_key(data, key)
+        append_audit(data, action="access_key.endpoint.update", object_type="access_key",
+                     object_id=key["id"], fields=["endpoint"])
         self.store.save(data)
         return key
 
@@ -293,6 +289,8 @@ class AccessKeyService:
             raise ValueError("access_key_limits_empty")
         key["updated_at"] = _now()
         enqueue_access_key(data, key)
+        append_audit(data, action="access_key.limits.update", object_type="access_key",
+                     object_id=key["id"], fields=changed)
         self.store.save(data)
         return key
 
@@ -312,6 +310,8 @@ class AccessKeyService:
             validity["expires_at"] = (base + timedelta(seconds=duration_seconds)).isoformat()
         key["updated_at"] = _now()
         enqueue_access_key(data, key)
+        append_audit(data, action="access_key.extend", object_type="access_key",
+                     object_id=key["id"], fields=["duration_seconds", "expires_at"])
         self.store.save(data)
         return key
 
@@ -327,6 +327,8 @@ class AccessKeyService:
         quota["traffic_reset_at"] = timestamp
         key["updated_at"] = timestamp
         enqueue_access_key(data, key)
+        append_audit(data, action="access_key.traffic.reset", object_type="access_key",
+                     object_id=key["id"], fields=["traffic_counters"])
         self.store.save(data)
         return key
 

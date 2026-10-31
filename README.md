@@ -64,11 +64,18 @@ shows the complete target list and requires a separate exact confirmation.
 Для автоматизации доступны эквивалентные команды:
 
 ```sh
-sudo ./install.sh --uninstall --non-interactive --yes
-sudo ./install.sh --purge --non-interactive --yes
-./install.sh --purge --dry-run --non-interactive
-sudo ./install.sh --update --non-interactive --yes
+xraydo system update --dry-run
+sudo xraydo system update --yes
+sudo xraydo system uninstall --yes       # preserves config and state
+xraydo system purge --dry-run
+sudo xraydo system purge --yes           # permanently removes all data
 ```
+
+The installed release keeps a root-owned, non-group/world-writable lifecycle
+installer under `lib/xraydo`. `xraydo system` validates its type, owner,
+permissions, and executable bit before invoking it without a shell. The
+standalone script remains the bootstrap entry point, but routine lifecycle
+operations no longer require locating `install.sh` manually.
 
 Profiles are `quick`, `master`, `node`, and `advanced`; roles are `standalone`,
 `master`, and `node`. Non-interactive answer files use a strict `KEY=VALUE`
@@ -107,12 +114,24 @@ Main commands / основные команды:
 ```sh
 xraydo                       # interactive menu; requires a TTY
 xraydo status
+xraydo system status
+xraydo system update --dry-run
+sudo xraydo system update --yes
+sudo xraydo system uninstall --yes
+sudo xraydo system purge --yes
 xraydo user create alice
 xraydo newUser alice         # compatibility alias
 xraydo user list
 xraydo user show alice
+xraydo user show 1           # monotonic numeric ID; #1 is also accepted
+xraydo user show 7K9M2QP     # stable seven-character ID, case-insensitive
 xraydo user set-enabled alice off
 xraydo user rename alice bob
+xraydo user delete-plan bob --grace 7d
+xraydo user delete bob --grace 7d --yes
+xraydo user delete-status bob
+# purge succeeds only after every active node ACKs blocking and grace ends:
+xraydo user purge bob --yes
 xraydo user set-note bob "priority customer"
 xraydo user set-tags bob "team-a,paid"
 xraydo user set-alias bob customer-01
@@ -173,6 +192,9 @@ xraydo key record-usage <keyID> --source <nodeID> --event-id <uniqueID> \
 xraydo key usage --key <keyID>
 xraydo key usage --user bob
 xraydo --json audit list --limit 100
+xraydo state compact --dry-run
+xraydo state compact --audit-days 365 --usage-days 90 \
+  --ip-days 7 --inbound-days 180 --operation-days 30
 xraydo settings language ru
 xraydo --lang en status      # one-command override
 xraydo --json user list
@@ -233,13 +255,30 @@ sections cover users, access keys and subscriptions, nodes and synchronization,
 inbounds and REALITY, core services, TLS, settings, health, and audit. Every
 menu action calls the same application path as the corresponding direct CLI
 command. `b`, `m`, and `q` navigate back, to the main menu, or exit; EOF and
-Ctrl+C exit cleanly. The advanced-command item accepts an xraydo command line
-but never invokes a shell.
+Ctrl+C exit cleanly. Update, uninstall, and full purge have a dedicated system
+menu with dry-run plans. A parser-backed “All CLI commands” browser recursively
+exposes every argparse command and required value, so newly added CLI features
+cannot silently disappear from the menu. The advanced-command item still
+accepts a complete xraydo command line without invoking a shell.
+
+Interactive output uses a compact terminal theme with section panels,
+breadcrumbs, numbered actions, highlighted destructive operations, command
+cards, and clear success/error results. Colors are emitted only to a capable
+TTY. Set `NO_COLOR=1` to disable ANSI colors or `XRAYDO_ASCII=1` to replace box
+drawing and symbols; redirected output and `--json` remain unchanged. Panels
+and long menu labels wrap to narrow SSH terminals.
 
 Запуск `xraydo` без аргументов открывает двуязычное интерактивное меню для
 пользователей, ключей и подписок, нод, inbound, ядер, TLS, health и настроек.
 Клавиши `b`, `m` и `q` возвращают назад, в главное меню или завершают работу.
-Расширенный пункт принимает обычную команду xraydo, не запуская shell.
+Обновление, uninstall и полный purge доступны в отдельном системном разделе с
+dry-run. Раздел «Все команды CLI» автоматически строится из argparse и поэтому
+покрывает весь функционал. Расширенный пункт принимает обычную команду xraydo,
+не запуская shell.
+
+Интерактивный вывод использует панели, breadcrumbs, выделение опасных действий
+и понятные статусы результата. `NO_COLOR=1` отключает ANSI-цвета,
+`XRAYDO_ASCII=1` включает ASCII-рамки; JSON и перенаправленный вывод не меняются.
 
 The REALITY command resolves and blocks non-public targets, requires a trusted
 TLS 1.3 + HTTP/2 handshake for the selected SNI, asks Xray itself to generate
@@ -356,8 +395,18 @@ requires `--https-only`, validates certificate dates, SAN, certificate/key
 pairing, and private-key permissions before binding. The intentionally narrow
 HTTP implementation accepts only bounded `GET /sub/<token>` requests, limits
 concurrency, disables access logging, sends `Cache-Control: no-store`, and
-closes every connection after its response. Run it under the service manager;
-automatic certificate issuance is a separate unfinished milestone.
+closes every connection after its response. Run it under the service manager.
+
+The installer can obtain a Let's Encrypt certificate for either a DNS name or
+a public IP address. Public-IP issuance requires Certbot 5.4 or newer and uses
+Let's Encrypt's short-lived profile; on Debian 13 the installer therefore uses
+the official Certbot snap instead of the older distribution package. HTTP-01
+must be reachable on port 80. When another web server already owns that port,
+the installer uses `/var/www/html` as its webroot instead of stopping it.
+`xraydo-certbot-renew.timer` checks twice daily, and a Certbot deploy hook
+atomically imports each renewed certificate before dependent services restart.
+The same operations are available explicitly through `tls acme-issue`,
+`tls acme-renew`, and `tls acme-deploy`.
 
 The autonomous TLS manager creates its private CA once, stores CA and leaf keys
 in separate mode-0700 version directories, and exposes stable `current` paths
@@ -455,21 +504,51 @@ desired state. Отдельный node-agent получает поддержив
 ACK. Сертификат можно ротировать или немедленно отозвать. Команды `sync` остаются
 только локальным административным интерфейсом.
 
+Every state read/write is guarded by an inter-process lock. New multi-step
+operations use a locked read-modify-write transaction; legacy callers also use
+revision compare-and-swap, so a concurrent update fails without overwriting
+newer data. Writes remain atomic and durable, and `state.json.previous` (mode
+`0600`) is restored automatically if the primary JSON is damaged. Disabling a
+user atomically disables every non-revoked AccessKey and queues the change for
+all enabled nodes. Deletion is a two-phase lifecycle: request blocking, wait for
+per-node ACK plus the grace deadline, then explicitly purge credentials. Audit
+events contain actor/action/object and changed field names only. `state compact`
+provides dry-run and bounded retention while never deleting pending operations.
+
+Каждое чтение и изменение state защищено межпроцессным lock. Многошаговые
+операции используют транзакцию read-modify-write, а старые вызовы защищены
+revision/CAS и не могут молча затереть более новую запись. При повреждении JSON
+автоматически восстанавливается `state.json.previous` с правами `0600`.
+Отключение пользователя одной транзакцией блокирует все AccessKey и создаёт
+операции для активных нод. Удаление состоит из блокировки, ACK каждой ноды,
+grace period и отдельного purge credentials. Audit хранит только имена
+изменённых полей, без значений секретов и IP. `state compact` поддерживает
+dry-run и никогда не удаляет незавершённые операции.
+
 ## Migration / Миграция
 
-The state file contains `schema_version`. Schema 9 separates access keys and
-their protocol credentials from users. Migration from schema 0 through 8 is atomic,
+The state file contains `schema_version`. Schema 10 uses a stable, unambiguous
+seven-character primary user ID plus a monotonic positive `numeric_id`. Every
+user-taking command accepts the name, alias, short ID, `12`, or `#12`. Numeric
+IDs are never reused after deletion. Migration replaces legacy user UUIDs in
+AccessKeys, subscriptions, sync operations, deletion state, and audit links;
+previously issued subscription tokens remain valid. Schema 9 separates access
+keys and their protocol credentials from users. Migration from schema 0 through 9 is atomic,
 preserves old Xray UUIDs and configured endpoint credentials, and adds
 idempotent per-key/per-source usage events plus a persistent per-node
 desired-state delivery queue. Sync operations use immutable `owner_id` and
 `resource_id`; display names are never routing keys or part of the AccessKey
 payload. Unknown fields are retained. Back up
 `state.json` before upgrading.
-Version `0.1.0` supports schema `9`; no migration from 3x-ui is available yet.
+Version `0.1.0` supports schema `10`; no migration from 3x-ui is available yet.
 Never copy production secrets into the repository.
 
-Файл состояния содержит `schema_version`. Перед обновлением сохраните резервную
-копию `state.json`. Версия `0.1.0` поддерживает схему `9`; импорт из 3x-ui пока
+Файл состояния содержит `schema_version`. Схема `10` заменяет UUID пользователя
+на стабильный семисимвольный ID и добавляет монотонный цифровой `numeric_id`.
+Во всех командах можно использовать имя, alias, короткий ID, `12` или `#12`;
+освободившиеся номера не переиспользуются. Миграция обновляет все внутренние
+ссылки и сохраняет работоспособность ранее выданных subscription-токенов.
+Перед обновлением сохраните резервную копию `state.json`. Импорт из 3x-ui пока
 не реализован. Не помещайте production-секреты в репозиторий.
 
 See [TODO.md](TODO.md) for the full product requirements.

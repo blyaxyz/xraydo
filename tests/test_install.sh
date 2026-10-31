@@ -50,6 +50,10 @@ printf '%s\n' \
     'FIRST_USER_DURATION=60d' \
     'FIRST_USER_IPS=3' \
     'PUBLIC_HOST=203.0.113.10' \
+    'ACME_EMAIL=ops@example.com' \
+    'REALITY_TARGET=ya.ru' \
+    'TELEMT_PORT=8443' \
+    'TELEMT_TLS_DOMAIN=vk.com' \
     'UTLS_PROFILE=randomizednoalpn' \
     'HYSTERIA_ECH=decoy.example.com' > "$first_user_answers"
 
@@ -57,6 +61,8 @@ first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dr
 [[ "$first_user_output" == *'First user / Первый пользователь: alice (custom)'* ]]
 [[ "$first_user_output" == *'duration=60d, traffic=250GB, devices=1, IP=3'* ]]
 [[ "$first_user_output" == *'REALITY uTLS: randomizednoalpn'* ]]
+[[ "$first_user_output" == *'REALITY target/SNI: ya.ru'* ]]
+[[ "$first_user_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$first_user_output" == *'Hysteria ECH: decoy.example.com'* ]]
 [[ "$first_user_output" != *'subscription_token'* ]]
 
@@ -73,13 +79,19 @@ grep -q 'tls renew-daemon --once' "$ROOT_DIR/install.sh"
 grep -q 'port_owner 443' "$ROOT_DIR/install.sh"
 grep -q 'user create.*FIRST_USER_NAME' "$ROOT_DIR/install.sh"
 grep -q 'core reality' "$ROOT_DIR/install.sh"
+grep -q -- '--target "\$REALITY_TARGET" --sni "\$REALITY_TARGET"' "$ROOT_DIR/install.sh"
 grep -q 'core hysteria' "$ROOT_DIR/install.sh"
 grep -q 'core telemt' "$ROOT_DIR/install.sh"
+grep -q -- '--tls-domain "\$TELEMT_TLS_DOMAIN"' "$ROOT_DIR/install.sh"
+grep -q 'xraydo-certbot-renew.timer' "$ROOT_DIR/install.sh"
+grep -q 'renewal-hooks/deploy' "$ROOT_DIR/install.sh"
 grep -q 'hysteria.*ech --public-name' "$ROOT_DIR/install.sh"
 grep -q 'subscription qr.*--token-file' "$ROOT_DIR/install.sh"
 grep -q 'qrencode -t ANSIUTF8 -o -' "$ROOT_DIR/install.sh"
 grep -q 'NON_INTERACTIVE.*-t 0.*-t 1.*-w /dev/tty' "$ROOT_DIR/install.sh"
 grep -q 'install -d -m 0755 /var/lib/xraydo' "$ROOT_DIR/install.sh"
+grep -q 'stable_installer=.*lib/xraydo/install.sh' "$ROOT_DIR/install.sh"
+grep -q 'install -m 0755.*stable_installer' "$ROOT_DIR/install.sh"
 
 health_line="$(grep -n 'Xray version health-check' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"
 create_line="$(grep -n 'user create.*FIRST_USER_NAME' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"
