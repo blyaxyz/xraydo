@@ -5,11 +5,12 @@ GitHub workflows 31 октября 2026 года.
 
 Проверенная база на момент аудита:
 
-- `187` Python-тестов проходят на Debian 13/systemd test server; локально
-  проходят `183`, а `4` socket-теста (включая mTLS) пропущены только из-за
-  запрета socket в sandbox;
+- `193` Python-теста проходят на Debian 13/systemd test server; локально
+  проходят все применимые тесты, а `4` socket-теста (включая mTLS) пропущены
+  только из-за запрета socket в sandbox;
 - `tests/test_install.sh` и синтаксическая проверка установщика проходят;
-- локально есть незакоммиченные изменения в `install.sh`, `i18n.py` и их тестах;
+- проверенный пул изменений зафиксирован в Git; рабочее дерево не содержит
+  незадокументированных исходников;
 - проект уже имеет terminal-only CLI, standalone-установщик, локальные роли,
   пользователей и AccessKey, подписки, private CA, REALITY, Hysteria 2, Telemt,
   inbound revisions и persistent sync queue;
