@@ -135,10 +135,14 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Changed
 
-- State schema is now version `9`. Existing schema `0` through `8` files
+- Random 256-bit subscription tokens now use a salted SHA-256 verifier instead
+  of a password-oriented scrypt calculation, reducing user creation to a few
+  milliseconds while retaining constant-time checks and legacy scrypt support.
+- State schema is now version `10`. Existing schema `0` through `9` files
   migrate automatically. Legacy Xray UUIDs and endpoint credentials move to a
-  default AccessKey; persisted sync operations gain immutable owner IDs; users,
-  settings, and unknown extension fields are preserved.
+  default AccessKey; user UUIDs become seven-character IDs with numeric aliases;
+  persisted sync operations gain immutable owner IDs; settings and unknown
+  extension fields are preserved.
 - AccessKey synchronization uses explicit immutable `owner_id`/`resource_id`
   routing and an allowlisted payload that cannot acquire user display or
   administrative fields accidentally.

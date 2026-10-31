@@ -377,9 +377,11 @@ support `--json`; service mutations require the administrator to invoke
 `--lines` (1–10000).
 
 The subscription token returned during user creation or rotation is shown once.
-Only a salted scrypt verifier is stored; legacy SHA-256 verifiers migrate
-without exposing or resetting their tokens. State is written atomically under `/var/lib/xraydo`
-for root or `$XDG_STATE_HOME/xraydo` for an unprivileged administrator.
+New tokens contain 256 random bits and store only a salted SHA-256 verifier with
+constant-time comparison. This avoids password-KDF latency during user creation;
+legacy `scrypt-v1` verifiers remain accepted without exposing or resetting their
+tokens. State is written atomically under `/var/lib/xraydo` for root or
+`$XDG_STATE_HOME/xraydo` for an unprivileged administrator.
 Administrative contact/source/external-ID/attribute fields stay inside the
 local user record. Audit events record the actor, timestamp, object ID, action,
 and changed field names, but never the field values or subscription token.

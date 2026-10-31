@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import base64
+import hashlib
+import json
 import tempfile
 import unittest
 import urllib.parse
@@ -38,6 +39,24 @@ class SubscriptionTests(unittest.TestCase):
         credential = state["subscription_credentials"][0]
         self.assertEqual(credential["algorithm"], "sha256-v1")
         self.assertNotEqual(credential["digest"], self.token)
+
+    def test_user_create_does_not_run_password_kdf(self) -> None:
+        with patch("xraydo.users.hashlib.scrypt", side_effect=AssertionError("slow KDF")):
+            user, token = self.users.create("fast-user")
+        self.assertEqual(self.users.verify_subscription_token(token)["id"], user["id"])
+
+    def test_legacy_scrypt_token_remains_valid(self) -> None:
+        state = self.store.load()
+        credential = state["subscription_credentials"][0]
+        salt = bytes.fromhex(credential["salt"])
+        credential["algorithm"] = "scrypt-v1"
+        credential["digest"] = hashlib.scrypt(
+            self.token.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32
+        ).hex()
+        self.store.save(state)
+        self.assertEqual(
+            self.users.verify_subscription_token(self.token)["id"], self.user["id"]
+        )
 
     def test_rotation_invalidates_old_token_and_audit_contains_no_secret(self) -> None:
         _user, replacement = self.users.rotate_subscription("alice", actor="operator")
