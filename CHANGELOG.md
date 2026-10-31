@@ -5,6 +5,12 @@ must be called out explicitly under a `Breaking` subsection.
 
 ## Unreleased
 
+### Changed
+
+- Reworked the README into a Russian-first, task-oriented guide and changed the
+  bootstrap examples from a release asset to the current `master` installer,
+  with both curl and wget commands.
+
 ### Added
 
 - A `--telemt-only` three-question installer flow for language, exact public
