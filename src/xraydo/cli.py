@@ -15,12 +15,15 @@ from typing import Optional, Sequence
 from . import __version__
 from .access_keys import AccessKeyService
 from .countries import detect_countries, load_countries
+from .control_plane import ControlPKI, ControlPlaneService, serve_control_plane
 from .health import core_health
 from .hysteria import configure_hysteria
 from .hysteria_manager import HysteriaManager
 from .inbounds import InboundService, apply_assignments, load_document
 from .i18n import SUPPORTED_LANGUAGES, Translator, installed_language, requested_language
+from .menu import run_interactive
 from .nodes import NodeService
+from .node_agent import NodeAgent, enroll as enroll_node_agent
 from .reality import (
     FINGERPRINTS, configure_reality, discover_targets, fingerprint_profiles,
     scan_result,
@@ -128,6 +131,43 @@ def parser() -> argparse.ArgumentParser:
     sync_fail.add_argument("--error", required=True)
     sync_summary = sync_commands.add_parser("summary")
     sync_summary.add_argument("--node", required=True)
+
+    control = commands.add_parser("control", help="secure master-to-node control plane")
+    control_commands = control.add_subparsers(dest="control_command", required=True)
+    control_init = control_commands.add_parser("init")
+    control_init.add_argument("--public-host", required=True)
+    control_init.add_argument("--dir", type=Path)
+    control_init.add_argument("--days", type=int, default=365)
+    control_export = control_commands.add_parser("export-ca")
+    control_export.add_argument("--dir", type=Path)
+    control_export.add_argument("--output", type=Path, required=True)
+    control_bootstrap = control_commands.add_parser("bootstrap")
+    control_bootstrap.add_argument("--node", required=True)
+    control_bootstrap.add_argument("--ttl", default="10m")
+    control_bootstrap.add_argument("--token-file", type=Path)
+    control_serve = control_commands.add_parser("serve")
+    control_serve.add_argument("--dir", type=Path)
+    control_serve.add_argument("--listen", default="0.0.0.0")
+    control_serve.add_argument("--port", type=int, default=8445)
+    control_serve.add_argument("--rate-limit", type=int, default=120)
+    control_revoke = control_commands.add_parser("revoke")
+    control_revoke.add_argument("--node", required=True)
+    control_revoke.add_argument("--yes", action="store_true")
+
+    agent = commands.add_parser("agent", help="authenticated node agent")
+    agent_commands = agent.add_subparsers(dest="agent_command", required=True)
+    agent_enroll = agent_commands.add_parser("enroll")
+    agent_enroll.add_argument("--master", required=True)
+    agent_enroll.add_argument("--node", required=True)
+    agent_enroll.add_argument("--token-file", type=Path, required=True)
+    agent_enroll.add_argument("--ca", type=Path, required=True)
+    agent_enroll.add_argument("--dir", type=Path, required=True)
+    agent_run = agent_commands.add_parser("run")
+    agent_run.add_argument("--config", type=Path, required=True)
+    agent_run.add_argument("--once", action="store_true")
+    agent_run.add_argument("--interval", type=int, default=10)
+    agent_rotate = agent_commands.add_parser("rotate")
+    agent_rotate.add_argument("--config", type=Path, required=True)
 
     user = commands.add_parser("user", aliases=["users"])
     user_commands = user.add_subparsers(dest="user_command", required=True)
@@ -672,44 +712,6 @@ def manage_local_service(
         )
 
 
-def interactive(
-    service: UserService, translator: Translator, subscriptions: SubscriptionService
-) -> int:
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print(translator.get("error.non_tty"), file=sys.stderr)
-        return 2
-    while True:
-        print(f"\n{translator.get('menu.header')}\n")
-        print(f"  1) {translator.get('menu.item.users')}")
-        print(f"  2) {translator.get('menu.item.status')}")
-        print(f"  9) {translator.get('menu.item.settings')}")
-        print(f"  0) {translator.get('menu.item.exit')}")
-        choice = input(f"\n{translator.get('menu.choice')}").strip() or "1"
-        if choice in {"0", "q", "quit"}:
-            return 0
-        if choice == "2":
-            print(translator.get("status.ready", count=len(service.list())))
-        elif choice == "1":
-            print(f"\n{translator.get('menu.users.title')}\n")
-            print(f"  1) {translator.get('menu.users.create')}")
-            print(f"  2) {translator.get('menu.users.list')}")
-            print(f"  0) {translator.get('menu.item.exit')}")
-            action = input(f"\n{translator.get('menu.choice')}").strip() or "1"
-            if action == "1":
-                name = input(translator.get("menu.users.name")).strip() or "default"
-                user, token = service.create(name)
-                print(translator.get("user.created", name=user["name"], id=user["id"]))
-                print(translator.get("user.secret_once", token=token))
-                if subscriptions.base_url():
-                    try:
-                        print_private_ca_warning(subscriptions.store, translator)
-                        print(subscriptions.qr(token), end="")
-                    except ValueError as error:
-                        print(translator.get(f"error.{str(error)}"), file=sys.stderr)
-            elif action == "2":
-                print_users(service.list(), translator)
-
-
 def print_users(users: list[dict[str, object]], translator: Translator) -> None:
     if not users:
         print(translator.get("users.empty"))
@@ -836,7 +838,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     inbounds = InboundService(store)
     try:
         if args.command is None:
-            return interactive(service, translator, subscriptions)
+            return run_interactive(
+                translator,
+                lambda arguments: main(["--lang", translator.language, *arguments]),
+            )
         if args.command == "role":
             if args.role_command == "set":
                 result = roles.set(args.value)
@@ -1042,6 +1047,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             elif args.sync_command == "summary":
                 summary = sync_queue.summary(node["id"])
                 emit({"sync": summary}, translator.get("sync.summary", pending=summary["states"]["pending"], delivering=summary["states"]["delivering"]), args.json)
+        elif args.command == "control":
+            pki = ControlPKI(getattr(args, "dir", None) or store.data_dir / "control-pki")
+            control_plane = ControlPlaneService(store, pki)
+            if args.control_command == "init":
+                result = pki.initialize(args.public_host, args.days)
+                emit({"control_pki": result}, f"Control plane PKI initialized: {result['ca']}", args.json)
+            elif args.control_command == "export-ca":
+                pki.initialize_from_existing()
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(pki.ca_cert, args.output)
+                os.chmod(args.output, 0o644)
+                emit({"ca": str(args.output)}, f"Control plane CA exported: {args.output}", args.json)
+            elif args.control_command == "bootstrap":
+                ttl = parse_duration(args.ttl)
+                result = control_plane.create_bootstrap(args.node, ttl)
+                if args.token_file:
+                    args.token_file.parent.mkdir(parents=True, exist_ok=True)
+                    args.token_file.write_text(result["token"] + "\n", encoding="utf-8")
+                    os.chmod(args.token_file, 0o600)
+                    public = dict(result)
+                    public.pop("token")
+                    public["token_file"] = str(args.token_file)
+                    emit({"bootstrap": public}, f"One-time bootstrap token written to {args.token_file}", args.json)
+                else:
+                    emit({"bootstrap": result}, f"One-time bootstrap token: {result['token']}", args.json)
+            elif args.control_command == "serve":
+                if not 1 <= args.rate_limit <= 10000:
+                    raise ValueError("control_invalid_rate_limit")
+                serve_control_plane(control_plane, args.listen, args.port,
+                                    max_requests_per_minute=args.rate_limit)
+            elif args.control_command == "revoke":
+                if not args.yes:
+                    raise ValueError("confirmation_required")
+                result = control_plane.revoke(args.node)
+                emit({"revocation": result}, f"Node trust revoked: {result['node_id']}", args.json)
+        elif args.command == "agent":
+            if args.agent_command == "enroll":
+                token = read_secret_file(args.token_file)
+                result = enroll_node_agent(args.master, args.node, token, args.dir, args.ca)
+                emit({"agent": result}, f"Node agent enrolled: {result['node_id']}", args.json)
+            elif args.agent_command == "run":
+                agent_service = NodeAgent(args.config)
+                if args.once:
+                    result = agent_service.run_once()
+                    emit({"agent": result}, json.dumps(result, ensure_ascii=False), args.json)
+                else:
+                    agent_service.run(args.interval)
+            elif args.agent_command == "rotate":
+                result = NodeAgent(args.config).rotate()
+                emit({"agent": result}, f"Node certificate rotated: {result['node_id']}", args.json)
         elif args.command in {"user", "users"}:
             if args.user_command in {"create", "new"}:
                 user, token = service.create(args.name)

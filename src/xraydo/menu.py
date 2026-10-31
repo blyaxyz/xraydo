@@ -1,0 +1,487 @@
+from __future__ import annotations
+
+import shlex
+import sys
+from collections.abc import Callable, Sequence
+from typing import Optional
+
+from .i18n import Translator
+
+CommandRunner = Callable[[Sequence[str]], int]
+
+
+class _Navigate(Exception):
+    def __init__(self, destination: str) -> None:
+        super().__init__(destination)
+        self.destination = destination
+
+
+def _read(prompt: str, default: Optional[str] = None) -> str:
+    try:
+        value = input(prompt).strip()
+    except (EOFError, KeyboardInterrupt) as error:
+        print()
+        raise _Navigate("quit") from error
+    lowered = value.casefold()
+    if lowered in {"q", "quit", "exit", "выход"}:
+        raise _Navigate("quit")
+    if lowered in {"m", "main", "home", "главное", "главная"}:
+        raise _Navigate("main")
+    if lowered in {"b", "back", "назад"}:
+        raise _Navigate("back")
+    return value or (default or "")
+
+
+def _required(translator: Translator, key: str, default: Optional[str] = None) -> str:
+    while True:
+        value = _read(translator.get(key), default)
+        if value:
+            return value
+        print(translator.get("menu.error.required"))
+
+
+def _confirm(translator: Translator) -> bool:
+    return _read(translator.get("menu.confirm"), "no").casefold() in {
+        "y", "yes", "да", "д",
+    }
+
+
+def _execute(runner: CommandRunner, translator: Translator, arguments: Sequence[str]) -> int:
+    rendered = shlex.join(["xraydo", *arguments])
+    print(f"\n{translator.get('menu.command', command=rendered)}\n")
+    try:
+        result = runner(arguments)
+    except SystemExit as error:
+        result = error.code if isinstance(error.code, int) else 2
+    print(translator.get("menu.command.result", code=result))
+    return result
+
+
+def _submenu(
+    translator: Translator,
+    title: str,
+    items: Sequence[tuple[str, str, Callable[[], None]]],
+) -> str:
+    while True:
+        print(f"\n{title}\n")
+        for choice, label, _handler in items:
+            print(f"  {choice}) {label}")
+        print(f"\n  {translator.get('menu.navigation')}")
+        try:
+            choice = _read(translator.get("menu.choice")) or "1"
+        except _Navigate as navigation:
+            if navigation.destination == "back":
+                return "main"
+            return navigation.destination
+        if choice == "0":
+            return "main"
+        handler = next((handler for number, _label, handler in items if number == choice), None)
+        if handler is None:
+            print(translator.get("menu.error.choice"))
+            continue
+        try:
+            handler()
+        except _Navigate as navigation:
+            if navigation.destination == "back":
+                continue
+            return navigation.destination
+
+
+def _users_menu(runner: CommandRunner, translator: Translator) -> str:
+    def create() -> None:
+        name = _required(translator, "menu.prompt.user", "default")
+        _execute(runner, translator, ["user", "create", name])
+
+    def show() -> None:
+        _execute(runner, translator, ["user", "show", _required(translator, "menu.prompt.user")])
+
+    def search() -> None:
+        _execute(runner, translator, ["user", "search", _required(translator, "menu.prompt.query")])
+
+    def rename() -> None:
+        reference = _required(translator, "menu.prompt.user")
+        new_name = _required(translator, "menu.prompt.new_name")
+        _execute(runner, translator, ["user", "rename", reference, new_name])
+
+    def enabled() -> None:
+        reference = _required(translator, "menu.prompt.user")
+        value = _required(translator, "menu.prompt.on_off", "on")
+        _execute(runner, translator, ["user", "set-enabled", reference, value])
+
+    def note() -> None:
+        reference = _required(translator, "menu.prompt.user")
+        value = _required(translator, "menu.prompt.note")
+        _execute(runner, translator, ["user", "set-note", reference, value])
+
+    def tags() -> None:
+        reference = _required(translator, "menu.prompt.user")
+        value = _required(translator, "menu.prompt.tags")
+        _execute(runner, translator, ["user", "set-tags", reference, value])
+
+    return _submenu(
+        translator,
+        translator.get("menu.users.title"),
+        (
+            (
+                "1",
+                translator.get("menu.users.list"),
+                lambda: _execute(runner, translator, ["user", "list"]),
+            ),
+            ("2", translator.get("menu.users.create"), create),
+            ("3", translator.get("menu.users.show"), show),
+            ("4", translator.get("menu.users.search"), search),
+            ("5", translator.get("menu.users.rename"), rename),
+            ("6", translator.get("menu.users.enabled"), enabled),
+            ("7", translator.get("menu.users.note"), note),
+            ("8", translator.get("menu.users.tags"), tags),
+        ),
+    )
+
+
+def _access_menu(runner: CommandRunner, translator: Translator) -> str:
+    def key_list() -> None:
+        user = _required(translator, "menu.prompt.user")
+        _execute(runner, translator, ["key", "list", "--user", user])
+
+    def key_create() -> None:
+        user = _required(translator, "menu.prompt.user")
+        device = _required(translator, "menu.prompt.device", "default")
+        _execute(runner, translator, ["key", "create", "--user", user, "--device", device])
+
+    def key_show() -> None:
+        _execute(runner, translator, ["key", "show", _required(translator, "menu.prompt.key")])
+
+    def key_state(action: str) -> Callable[[], None]:
+        def run() -> None:
+            key_id = _required(translator, "menu.prompt.key")
+            if action == "revoke" and not _confirm(translator):
+                print(translator.get("menu.cancelled"))
+                return
+            _execute(runner, translator, ["key", action, key_id])
+        return run
+
+    def subscription(action: str, *, confirm: bool = False) -> Callable[[], None]:
+        def run() -> None:
+            user = _required(translator, "menu.prompt.user")
+            if confirm and not _confirm(translator):
+                print(translator.get("menu.cancelled"))
+                return
+            arguments = ["subscription", action, user]
+            if action == "show":
+                arguments.extend(["--format", "plain"])
+            _execute(runner, translator, arguments)
+        return run
+
+    return _submenu(
+        translator,
+        translator.get("menu.access.title"),
+        (
+            ("1", translator.get("menu.keys.list"), key_list),
+            ("2", translator.get("menu.keys.create"), key_create),
+            ("3", translator.get("menu.keys.show"), key_show),
+            ("4", translator.get("menu.keys.disable"), key_state("disable")),
+            ("5", translator.get("menu.keys.enable"), key_state("enable")),
+            ("6", translator.get("menu.keys.revoke"), key_state("revoke")),
+            ("7", translator.get("menu.subscription.status"), subscription("status")),
+            ("8", translator.get("menu.subscription.show"), subscription("show")),
+            ("9", translator.get("menu.subscription.update"), subscription("update")),
+            (
+                "10",
+                translator.get("menu.subscription.rotate"),
+                subscription("rotate", confirm=True),
+            ),
+            (
+                "11",
+                translator.get("menu.subscription.revoke"),
+                subscription("revoke", confirm=True),
+            ),
+        ),
+    )
+
+
+def _nodes_menu(runner: CommandRunner, translator: Translator) -> str:
+    def add() -> None:
+        name = _required(translator, "menu.prompt.node_name")
+        alias = _read(translator.get("menu.prompt.alias"))
+        arguments = ["node", "add", name]
+        if alias:
+            arguments.extend(["--alias", alias])
+        _execute(runner, translator, arguments)
+
+    def node_command(action: str) -> Callable[[], None]:
+        def run() -> None:
+            node = _required(translator, "menu.prompt.node")
+            _execute(runner, translator, ["node", action, node])
+        return run
+
+    def maintenance() -> None:
+        node = _required(translator, "menu.prompt.node")
+        value = _required(translator, "menu.prompt.on_off", "on")
+        _execute(runner, translator, ["node", "maintenance", node, value])
+
+    def enabled() -> None:
+        node = _required(translator, "menu.prompt.node")
+        value = _required(translator, "menu.prompt.on_off", "on")
+        _execute(runner, translator, ["node", "set-enabled", node, value])
+
+    def sync(action: str) -> Callable[[], None]:
+        def run() -> None:
+            node = _required(translator, "menu.prompt.node")
+            _execute(runner, translator, ["sync", action, "--node", node])
+        return run
+
+    return _submenu(
+        translator,
+        translator.get("menu.nodes.title"),
+        (
+            (
+                "1",
+                translator.get("menu.nodes.list"),
+                lambda: _execute(runner, translator, ["node", "list"]),
+            ),
+            ("2", translator.get("menu.nodes.add"), add),
+            ("3", translator.get("menu.nodes.show"), node_command("show")),
+            ("4", translator.get("menu.nodes.status"), node_command("status")),
+            ("5", translator.get("menu.nodes.maintenance"), maintenance),
+            ("6", translator.get("menu.nodes.enabled"), enabled),
+            ("7", translator.get("menu.sync.list"), sync("list")),
+            ("8", translator.get("menu.sync.summary"), sync("summary")),
+        ),
+    )
+
+
+def _inbounds_menu(runner: CommandRunner, translator: Translator) -> str:
+    def inbound_reference(action: str) -> Callable[[], None]:
+        def run() -> None:
+            inbound = _required(translator, "menu.prompt.inbound")
+            _execute(runner, translator, ["inbound", action, inbound])
+        return run
+
+    def scan() -> None:
+        target = _required(translator, "menu.prompt.target")
+        _execute(runner, translator, ["reality", "scan", "--target", target])
+
+    def import_inbound() -> None:
+        path = _required(translator, "menu.prompt.file")
+        _execute(runner, translator, ["inbound", "import", "--file", path])
+
+    return _submenu(
+        translator,
+        translator.get("menu.inbounds.title"),
+        (
+            (
+                "1",
+                translator.get("menu.inbounds.list"),
+                lambda: _execute(runner, translator, ["inbound", "list"]),
+            ),
+            ("2", translator.get("menu.inbounds.show"), inbound_reference("show")),
+            ("3", translator.get("menu.inbounds.history"), inbound_reference("history")),
+            ("4", translator.get("menu.inbounds.import"), import_inbound),
+            ("5", translator.get("menu.reality.scan"), scan),
+            (
+                "6",
+                translator.get("menu.reality.utls"),
+                lambda: _execute(runner, translator, ["reality", "utls"]),
+            ),
+        ),
+    )
+
+
+def _cores_menu(runner: CommandRunner, translator: Translator) -> str:
+    def service_action() -> None:
+        core = _required(translator, "menu.prompt.core", "telemt").casefold()
+        if core not in {"telemt", "hysteria"}:
+            print(translator.get("menu.error.core"))
+            return
+        action = _required(translator, "menu.prompt.service_action", "status").casefold()
+        if action not in {"start", "stop", "restart", "status", "version", "logs"}:
+            print(translator.get("menu.error.action"))
+            return
+        if action in {"stop", "restart"} and not _confirm(translator):
+            print(translator.get("menu.cancelled"))
+            return
+        _execute(runner, translator, [core, action])
+
+    def diagnostics(core: str) -> Callable[[], None]:
+        return lambda: _execute(runner, translator, [core, "diagnostics"])
+
+    return _submenu(
+        translator,
+        translator.get("menu.cores.title"),
+        (
+            (
+                "1",
+                translator.get("menu.item.status"),
+                lambda: _execute(runner, translator, ["status"]),
+            ),
+            ("2", translator.get("menu.cores.service"), service_action),
+            ("3", translator.get("menu.cores.telemt_diagnostics"), diagnostics("telemt")),
+            ("4", translator.get("menu.cores.hysteria_diagnostics"), diagnostics("hysteria")),
+            (
+                "5",
+                translator.get("menu.cores.telemt_links"),
+                lambda: _execute(
+                    runner,
+                    translator,
+                    ["telemt", "link", _required(translator, "menu.prompt.user")],
+                ),
+            ),
+        ),
+    )
+
+
+def _tls_menu(runner: CommandRunner, translator: Translator) -> str:
+    def issue() -> None:
+        kind = _required(translator, "menu.prompt.domain_ip", "ip").casefold()
+        value = _required(translator, "menu.prompt.host")
+        option = "--domain" if kind == "domain" else "--ip"
+        _execute(runner, translator, ["tls", "issue-self", option, value])
+
+    def export_ca() -> None:
+        output = _required(translator, "menu.prompt.output", "./xraydo-ca.crt")
+        _execute(runner, translator, ["tls", "export-ca", "--output", output])
+
+    def sync_ip() -> None:
+        address = _read(translator.get("menu.prompt.ip_optional"))
+        arguments = ["tls", "sync-ip"]
+        if address:
+            arguments.extend(["--ip", address])
+        _execute(runner, translator, arguments)
+
+    return _submenu(
+        translator,
+        translator.get("menu.tls.title"),
+        (
+            (
+                "1",
+                translator.get("menu.tls.status"),
+                lambda: _execute(runner, translator, ["tls", "status"]),
+            ),
+            (
+                "2",
+                translator.get("menu.tls.init"),
+                lambda: _execute(runner, translator, ["tls", "init-ca"]),
+            ),
+            ("3", translator.get("menu.tls.issue"), issue),
+            (
+                "4",
+                translator.get("menu.tls.renew"),
+                lambda: _execute(runner, translator, ["tls", "renew"]),
+            ),
+            ("5", translator.get("menu.tls.export"), export_ca),
+            ("6", translator.get("menu.tls.sync_ip"), sync_ip),
+        ),
+    )
+
+
+def _settings_menu(runner: CommandRunner, translator: Translator) -> str:
+    def setting(command: str, prompt: str, default: Optional[str] = None) -> Callable[[], None]:
+        def run() -> None:
+            value = _required(translator, prompt, default)
+            _execute(runner, translator, ["settings", command, value])
+        return run
+
+    def role() -> None:
+        value = _required(translator, "menu.prompt.role", "standalone")
+        _execute(runner, translator, ["role", "set", value])
+
+    return _submenu(
+        translator,
+        translator.get("menu.settings.title"),
+        (
+            (
+                "1",
+                translator.get("menu.settings.language"),
+                setting("language", "menu.prompt.language", "en"),
+            ),
+            (
+                "2",
+                translator.get("menu.settings.flags"),
+                setting("country-flags", "menu.prompt.on_off", "on"),
+            ),
+            (
+                "3",
+                translator.get("menu.settings.subscription_url"),
+                setting("subscription-url", "menu.prompt.url", "off"),
+            ),
+            (
+                "4",
+                translator.get("menu.settings.role_show"),
+                lambda: _execute(runner, translator, ["role", "show"]),
+            ),
+            ("5", translator.get("menu.settings.role_set"), role),
+            (
+                "6",
+                translator.get("menu.settings.audit"),
+                lambda: _execute(
+                    runner, translator, ["audit", "list", "--limit", "100"]
+                ),
+            ),
+        ),
+    )
+
+
+def _advanced(runner: CommandRunner, translator: Translator) -> None:
+    raw = _required(translator, "menu.prompt.command")
+    try:
+        arguments = shlex.split(raw)
+    except ValueError:
+        print(translator.get("menu.error.command"))
+        return
+    if arguments and arguments[0] == "xraydo":
+        arguments = arguments[1:]
+    if not arguments:
+        print(translator.get("menu.error.command"))
+        return
+    _execute(runner, translator, arguments)
+
+
+def run_interactive(translator: Translator, runner: CommandRunner) -> int:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(translator.get("error.non_tty"), file=sys.stderr)
+        return 2
+    menus: dict[str, Callable[[], str]] = {
+        "1": lambda: _users_menu(runner, translator),
+        "2": lambda: _access_menu(runner, translator),
+        "3": lambda: _nodes_menu(runner, translator),
+        "4": lambda: _inbounds_menu(runner, translator),
+        "5": lambda: _cores_menu(runner, translator),
+        "6": lambda: _tls_menu(runner, translator),
+        "7": lambda: _settings_menu(runner, translator),
+    }
+    while True:
+        print(f"\n{translator.get('menu.header')}\n")
+        print(f"  1) {translator.get('menu.item.users')}")
+        print(f"  2) {translator.get('menu.item.access')}")
+        print(f"  3) {translator.get('menu.item.nodes')}")
+        print(f"  4) {translator.get('menu.item.inbounds')}")
+        print(f"  5) {translator.get('menu.item.cores')}")
+        print(f"  6) {translator.get('menu.item.tls')}")
+        print(f"  7) {translator.get('menu.item.settings')}")
+        print(f"  8) {translator.get('menu.item.status')}")
+        print(f"  9) {translator.get('menu.item.advanced')}")
+        print(f"  0) {translator.get('menu.item.exit')}")
+        try:
+            choice = _read(f"\n{translator.get('menu.choice')}") or "1"
+        except _Navigate as navigation:
+            if navigation.destination == "quit":
+                return 0
+            continue
+        if choice == "0":
+            return 0
+        if choice == "8":
+            _execute(runner, translator, ["status"])
+            continue
+        if choice == "9":
+            try:
+                _advanced(runner, translator)
+            except _Navigate as navigation:
+                if navigation.destination == "quit":
+                    return 0
+            continue
+        menu = menus.get(choice)
+        if menu is None:
+            print(translator.get("menu.error.choice"))
+            continue
+        if menu() == "quit":
+            return 0

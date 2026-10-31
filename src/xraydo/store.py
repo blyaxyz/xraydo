@@ -71,6 +71,9 @@ class Store:
             "telemt_artifacts": [],
             "telemt_diagnostics": [],
             "telemt_usage_cursors": [],
+            "control_bootstrap_tokens": [],
+            "node_credentials": [],
+            "control_nonces": [],
         }
 
     @staticmethod
@@ -254,7 +257,8 @@ class Store:
             changed = True
         for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions",
                            "hysteria_diagnostics", "telemt_artifacts", "telemt_diagnostics",
-                           "telemt_usage_cursors"):
+                           "telemt_usage_cursors", "control_bootstrap_tokens",
+                           "node_credentials", "control_nonces"):
             if collection not in data:
                 data[collection] = []
                 changed = True

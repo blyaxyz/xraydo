@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .store import Store
@@ -167,24 +168,61 @@ class SyncQueueService:
             raise ValueError("sync_operation_not_found")
         return operation
 
-    def claim(self, node_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    def claim(
+        self,
+        node_id: str,
+        limit: int = 100,
+        *,
+        supported_types: Optional[set[str]] = None,
+        lease_seconds: int = 60,
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 1000:
             raise ValueError("sync_invalid_limit")
+        if not 5 <= lease_seconds <= 3600:
+            raise ValueError("sync_invalid_lease")
         data = self.store.load()
         node = next((item for item in data["nodes"] if item["id"] == node_id), None)
         if node is None:
             raise ValueError("node_not_found")
         claimed = []
-        timestamp = _now()
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat()
+        # A crashed agent must not leave operations permanently stuck in
+        # delivering. An expired lease is safe to redeliver because operation
+        # ids are immutable and agents persist their applied ids.
+        for operation in data.get("node_operations", []):
+            if operation.get("state") != "delivering":
+                continue
+            expires = operation.get("lease_expires_at")
+            try:
+                expired = expires is None or datetime.fromisoformat(expires) <= now
+            except (TypeError, ValueError):
+                expired = True
+            if expired:
+                operation["state"] = "pending"
+                operation["lease_id"] = None
+                operation["lease_expires_at"] = None
         for operation in data.get("node_operations", []):
             if operation["node_id"] != node_id or operation["state"] != "pending":
                 continue
+            if supported_types is not None and operation.get("resource_type") not in supported_types:
+                continue
+            retry_at = operation.get("next_attempt_at")
+            if retry_at:
+                try:
+                    if datetime.fromisoformat(retry_at) > now:
+                        continue
+                except (TypeError, ValueError):
+                    pass
             dependency_id = operation.get("depends_on")
             if dependency_id and not any(item["id"] == dependency_id and item["state"] == "applied"
                                          for item in data.get("node_operations", [])):
                 continue
             operation["state"] = "delivering"
             operation["attempts"] += 1
+            operation["lease_id"] = secrets.token_urlsafe(24)
+            operation["lease_expires_at"] = (now + timedelta(seconds=lease_seconds)).isoformat()
+            operation["next_attempt_at"] = None
             operation["updated_at"] = timestamp
             claimed.append(copy.deepcopy(operation))
             if len(claimed) == limit:
@@ -193,7 +231,8 @@ class SyncQueueService:
         return claimed
 
     def finish(self, operation_id: str, *, error: Optional[str] = None,
-               result: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+               result: Optional[dict[str, Any]] = None, node_id: Optional[str] = None,
+               lease_id: Optional[str] = None, retry_after_seconds: int = 0) -> dict[str, Any]:
         if error is not None:
             error = error.strip()
             if not error or len(error) > 500 or any(ord(char) < 32 for char in error):
@@ -205,12 +244,32 @@ class SyncQueueService:
         )
         if operation is None:
             raise ValueError("sync_operation_not_found")
+        if node_id is not None and operation["node_id"] != node_id:
+            raise ValueError("sync_wrong_node")
+        if operation["state"] == "applied" and error is None:
+            # An ACK may be retried after the response was lost. It is accepted
+            # only for the same node and result, never as a new state change.
+            if lease_id is not None and lease_id != operation.get("last_lease_id"):
+                raise ValueError("sync_invalid_lease")
+            if result is not None and operation.get("result") != result:
+                raise ValueError("sync_conflicting_ack")
+            return operation
         if operation["state"] != "delivering":
             raise ValueError("sync_operation_not_claimed")
+        if lease_id is not None and lease_id != operation.get("lease_id"):
+            raise ValueError("sync_invalid_lease")
+        if not 0 <= retry_after_seconds <= 86400:
+            raise ValueError("sync_invalid_retry")
         operation["state"] = "pending" if error else "applied"
         operation["last_error"] = error
         if error:
             operation["last_delivery_error"] = error
+            operation["next_attempt_at"] = (
+                datetime.now(timezone.utc) + timedelta(seconds=retry_after_seconds)
+            ).isoformat() if retry_after_seconds else None
+        operation["last_lease_id"] = operation.get("lease_id")
+        operation["lease_id"] = None
+        operation["lease_expires_at"] = None
         operation["updated_at"] = _now()
         if result is not None:
             if not isinstance(result, dict) or len(json.dumps(result)) > 65536:

@@ -7,6 +7,20 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Added
 
+- Secure master-to-node control plane with a dedicated node agent, one-time
+  expiring bootstrap, private-CA mTLS identities bound to immutable node UUIDs,
+  online certificate rotation and immediate application-layer revocation.
+- Versioned, HMAC-signed and replay-protected node messages with bounded
+  size/rate/time windows, capability negotiation, node-bound delivery and ACK,
+  expiring leases, exponential retry, idempotent redelivery, and desired-state
+  reconciliation. A real TLS integration test covers enrollment, lost ACK,
+  rotation, revocation, and protocol incompatibility.
+- Full English/Russian interactive navigation for users, access keys,
+  subscriptions, nodes, synchronization, inbounds, REALITY, cores, TLS,
+  settings, health, and audit. Menu actions reuse the existing CLI handlers;
+  an advanced command entry exposes the complete xraydo parser without
+  invoking a shell. Back/main/exit navigation, EOF/Ctrl+C handling, and
+  confirmations for disruptive actions are included.
 - Standalone Bash installer for apt, dnf, yum, zypper, and apk systems.
 - Pinned, SHA-256-verified Xray-core, Hysteria 2, and Telemt artifacts.
 - Quick, master, node, and advanced installation profiles.

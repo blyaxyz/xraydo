@@ -190,9 +190,19 @@ xraydo node health-policy --failure-threshold 3 --recovery-threshold 2
 xraydo node status de-1
 xraydo node set-enabled de-1 off
 xraydo sync list --node de-1
-xraydo --json sync claim --node de-1 --include-payload  # node agent only
+xraydo --json sync claim --node de-1 --include-payload  # local admin/debug only
 xraydo sync ack <operationID>
 xraydo sync fail <operationID> --error "temporary outage"
+xraydo control init --public-host master.example.com
+xraydo control export-ca --output ./control-ca.crt
+xraydo control bootstrap --node de-1 --ttl 10m --token-file ./de-1.bootstrap
+xraydo control serve --listen 0.0.0.0 --port 8445
+# On the node; transfer only control-ca.crt and the one-time 0600 token:
+xraydo agent enroll --master https://master.example.com:8445 --node <nodeUUID> \
+  --token-file ./de-1.bootstrap --ca ./control-ca.crt --dir /var/lib/xraydo-agent
+xraydo agent run --config /var/lib/xraydo-agent/agent.json
+xraydo agent rotate --config /var/lib/xraydo-agent/agent.json
+xraydo control revoke --node de-1 --yes
 xraydo node remove de-1 --yes
 xraydo settings country-flags off
 xraydo core reality --user bob --access-key <keyID> --target ya.ru --listen-port 443 --fingerprint firefox
@@ -217,6 +227,19 @@ sudo xraydo telemt restart
 xraydo hysteria status
 sudo xraydo hysteria restart
 ```
+
+Running `xraydo` without arguments opens the bilingual interactive menu. Its
+sections cover users, access keys and subscriptions, nodes and synchronization,
+inbounds and REALITY, core services, TLS, settings, health, and audit. Every
+menu action calls the same application path as the corresponding direct CLI
+command. `b`, `m`, and `q` navigate back, to the main menu, or exit; EOF and
+Ctrl+C exit cleanly. The advanced-command item accepts an xraydo command line
+but never invokes a shell.
+
+Запуск `xraydo` без аргументов открывает двуязычное интерактивное меню для
+пользователей, ключей и подписок, нод, inbound, ядер, TLS, health и настроек.
+Клавиши `b`, `m` и `q` возвращают назад, в главное меню или завершают работу.
+Расширенный пункт принимает обычную команду xraydo, не запуская shell.
 
 The REALITY command resolves and blocks non-public targets, requires a trusted
 TLS 1.3 + HTTP/2 handshake for the selected SNI, asks Xray itself to generate
@@ -412,18 +435,25 @@ certificate-only public export and never includes `ca.key` or `server.key`.
 
 ## Architecture / Архитектура
 
-The intended architecture has three roles: `standalone`, `master`, and `node`.
-The master owns global user identities and desired state; node agents will apply
-versioned changes and report health over a mutually authenticated channel. The
-present milestone implements the local application/service layer plus a
-persistent desired-state queue with claim, retry, and acknowledgement. Network
-transport and node authentication are not implemented yet; queue commands must
-not be exposed as a remote API or assumed secure.
+The architecture has three roles: `standalone`, `master`, and `node`. The master
+owns global identities and desired state. A separate node agent polls the
+versioned HTTPS control protocol, materializes supported desired-state
+operations idempotently, reconciles drift, and reports health. Bootstrap tokens
+are single-use and expire within one hour. Every later message requires a
+private-CA client certificate bound to the immutable node UUID plus a timestamp,
+nonce, and HMAC; the master enforces replay windows, message/rate limits,
+capabilities, operation ownership, leases, and idempotent ACKs. Certificates can
+be rotated online or revoked immediately. `sync claim/ack/fail` remain local
+administrative/debug commands and are not the network API.
 
-Планируемые роли: `standalone`, `master` и `node`. Master хранит глобальные
-идентификаторы пользователей и желаемое состояние; агенты нод будут применять
-версионированные изменения и возвращать health-данные по взаимно
-аутентифицированному каналу. Сейчас реализован только локальный слой приложения.
+Роли: `standalone`, `master` и `node`. Master хранит глобальные идентификаторы и
+desired state. Отдельный node-agent получает поддерживаемые операции по HTTPS,
+применяет их идемпотентно, сверяет desired/actual state и отправляет health.
+Одноразовый bootstrap ограничен временем; далее обязательны mTLS-сертификат,
+привязанный к UUID ноды, timestamp, nonce и HMAC. Master проверяет replay,
+размер/частоту сообщений, capability, владельца операции, lease и повторный
+ACK. Сертификат можно ротировать или немедленно отозвать. Команды `sync` остаются
+только локальным административным интерфейсом.
 
 ## Migration / Миграция
 

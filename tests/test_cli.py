@@ -455,6 +455,36 @@ class CliTests(unittest.TestCase):
         self.assertEqual(operation["payload"]["target"], "example.com")
         self.assertEqual(operation["payload"]["xver"], 1)
 
+    def test_control_plane_pki_bootstrap_export_and_revocation_cli(self) -> None:
+        node = json.loads(
+            run_cli(self.path, "--json", "node", "add", "edge", "--alias", "edge-1").stdout
+        )["node"]
+        initialized = run_cli(
+            self.path, "--json", "control", "init", "--public-host", "127.0.0.1"
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        ca = self.path / "control-ca.crt"
+        exported = run_cli(
+            self.path, "--json", "control", "export-ca", "--output", str(ca)
+        )
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertIn("BEGIN CERTIFICATE", ca.read_text())
+        token_file = self.path / "bootstrap.token"
+        bootstrap = run_cli(
+            self.path, "--json", "control", "bootstrap", "--node", "edge-1",
+            "--ttl", "1m", "--token-file", str(token_file),
+        )
+        self.assertEqual(bootstrap.returncode, 0, bootstrap.stderr)
+        self.assertEqual(token_file.stat().st_mode & 0o777, 0o600)
+        payload = json.loads(bootstrap.stdout)["bootstrap"]
+        self.assertEqual(payload["node_id"], node["id"])
+        self.assertNotIn("token", payload)
+        revoked = run_cli(
+            self.path, "--json", "control", "revoke", "--node", "edge-1", "--yes"
+        )
+        self.assertEqual(revoked.returncode, 0, revoked.stderr)
+        self.assertFalse(json.loads(revoked.stdout)["revocation"]["trusted"])
+
     def test_inbound_import_list_show_edit_history_and_bulk_plan(self) -> None:
         config_file = self.path / "xray.json"
         config_file.write_text(json.dumps({"inbounds": [
