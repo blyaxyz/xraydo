@@ -66,6 +66,17 @@ first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dr
 [[ "$first_user_output" == *'Hysteria ECH: decoy.example.com'* ]]
 [[ "$first_user_output" != *'subscription_token'* ]]
 
+telemt_only_output="$("$ROOT_DIR/install.sh" --telemt-only --lang ru \
+    --telemt-port 9443 --telemt-tls-domain vk.com --dry-run --non-interactive)"
+[[ "$telemt_only_output" == *'Cores / Ядра: telemt'* ]]
+[[ "$telemt_only_output" == *'Telemt: TCP 9443; TLS domain: vk.com'* ]]
+[[ "$telemt_only_output" == *'TLS: Telemt Fake TLS (vk.com)'* ]]
+[[ "$telemt_only_output" == *'Первый пользователь: hello (recommended)'* ]]
+[[ "$telemt_only_output" == *'Limits / Лимиты: unlimited'* ]]
+[[ "$telemt_only_output" != *'HTTPS subscription: TCP'* ]]
+[[ "$telemt_only_output" != *'ACME email:'* ]]
+[[ "$telemt_only_output" == *'"cores":"telemt"'* ]]
+
 grep -q 'xraydo tls renew-daemon --interval 3600 --jitter 300' "$ROOT_DIR/install.sh"
 grep -q 'enable --now xraydo-tls-renew.service' "$ROOT_DIR/install.sh"
 grep -q 'WantedBy=multi-user.target' "$ROOT_DIR/install.sh"
@@ -83,6 +94,10 @@ grep -q -- '--target "\$REALITY_TARGET" --sni "\$REALITY_TARGET"' "$ROOT_DIR/ins
 grep -q 'core hysteria' "$ROOT_DIR/install.sh"
 grep -q 'core telemt' "$ROOT_DIR/install.sh"
 grep -q -- '--tls-domain "\$TELEMT_TLS_DOMAIN"' "$ROOT_DIR/install.sh"
+grep -q -- '--telemt-only' "$ROOT_DIR/install.sh"
+grep -q 'Your Telegram Proxy connection link' "$ROOT_DIR/install.sh"
+grep -q 'Ссылка для подключения Telegram Proxy' "$ROOT_DIR/install.sh"
+grep -q 'telemt.*healthcheck' "$ROOT_DIR/install.sh"
 grep -q 'xraydo-certbot-renew.timer' "$ROOT_DIR/install.sh"
 grep -q 'renewal-hooks/deploy' "$ROOT_DIR/install.sh"
 grep -q 'hysteria.*ech --public-name' "$ROOT_DIR/install.sh"

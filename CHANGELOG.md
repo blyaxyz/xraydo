@@ -7,6 +7,9 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Added
 
+- A `--telemt-only` three-question installer flow for language, exact public
+  port, and Fake TLS domain. It creates/reuses `hello`, validates and starts the
+  service automatically, then prints and securely stores both Telegram links.
 - Let's Encrypt DNS and public-IP certificate issuance, with Certbot 5.4+
   provisioning through snap where required, HTTP webroot fallback, a twice-daily
   systemd renewal timer, deploy hook, atomic import, and dependent-service reload.

@@ -69,6 +69,7 @@ ACME_EMAIL=""
 REALITY_TARGET="ya.ru"
 TELEMT_PORT="8443"
 TELEMT_TLS_DOMAIN="vk.com"
+TELEMT_ONLY=false
 UTLS_PROFILE="firefox"
 HYSTERIA_ECH="off"
 PACKAGE_MANAGER=""
@@ -105,6 +106,7 @@ Options:
   --reality-target HOST REALITY target and SNI (default: ya.ru)
   --telemt-port PORT    Telemt public port (default: 8443)
   --telemt-tls-domain D Fake TLS domain for Telemt (default: vk.com)
+  --telemt-only         Short Telemt setup: language, port, TLS domain, link
   --utls PROFILE        REALITY uTLS profile (default: firefox)
   --hysteria-ech NAME   Generate ECH keys with this public/decoy name
   --dry-run             Print the complete plan without changing the system
@@ -224,6 +226,7 @@ while (($#)); do
         --telemt-tls-domain)
             (($# >= 2)) || fail "--telemt-tls-domain requires a domain"
             TELEMT_TLS_DOMAIN="$2"; shift 2 ;;
+        --telemt-only) TELEMT_ONLY=true; shift ;;
         --utls)
             (($# >= 2)) || fail "--utls requires a profile"
             UTLS_PROFILE="$2"; shift 2 ;;
@@ -277,6 +280,18 @@ if [[ -z "$LANGUAGE" ]]; then
         read -r -p 'Choice / Выбор [1]: ' language_choice
         [[ "$language_choice" == "2" ]] && LANGUAGE="ru" || LANGUAGE="en"
     fi
+fi
+
+if [[ "$TELEMT_ONLY" == true ]]; then
+    INSTALL_ACTION="${INSTALL_ACTION:-install}"
+    PROFILE="quick"
+    ROLE="standalone"
+    CORES="telemt"
+    TLS_MODE="private-ca"
+    FIRST_USER_MODE="recommended"
+    FIRST_USER_NAME="hello"
+    FIRST_USER_LIMITS="unlimited"
+    ASSUME_YES=true
 fi
 
 root_exec() {
@@ -822,7 +837,15 @@ if port_in_use tcp 443; then
 fi
 xray_port="$(next_free_port tcp 443)"
 hysteria_port="$(next_free_port udp 1935)"
-telemt_port="$(next_free_port tcp "$TELEMT_PORT")"
+if [[ "$TELEMT_ONLY" == true ]]; then
+    telemt_port="$TELEMT_PORT"
+    if port_in_use tcp "$telemt_port" && \
+        ! { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet xraydo-telemt.service; }; then
+        fail "Telemt TCP port $telemt_port is occupied by $(port_owner "$telemt_port")"
+    fi
+else
+    telemt_port="$(next_free_port tcp "$TELEMT_PORT")"
+fi
 subscription_port="$(next_free_port tcp 8444)"
 hysteria_stats_port="$(next_free_port tcp 9999)"
 telemt_api_port="$(next_free_port tcp 9091)"
@@ -836,8 +859,12 @@ printf '  %s: %s @ %s\n' "$SOURCE_LABEL" "$XRAYDO_ARCHIVE_URL" "$XRAYDO_REF"
 printf '  SHA-256: %s\n' "$XRAYDO_ARCHIVE_SHA256"
 printf '  %s: %s\n' "$PREFIX_LABEL" "$PREFIX"
 printf '  %s: %s\n' "$CORES_LABEL" "$CORES"
-printf '  TLS: %s\n' "$TLS_MODE"
-[[ "$TLS_MODE" != "private-ca" ]] && printf '    ACME email: %s\n' "${ACME_EMAIL:-not provided}"
+if [[ "$TELEMT_ONLY" == true ]]; then
+    printf '  TLS: Telemt Fake TLS (%s)\n' "$TELEMT_TLS_DOMAIN"
+else
+    printf '  TLS: %s\n' "$TLS_MODE"
+    [[ "$TLS_MODE" != "private-ca" ]] && printf '    ACME email: %s\n' "${ACME_EMAIL:-not provided}"
+fi
 printf '  Init: %s\n' "$INIT_SYSTEM"
 if [[ "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
     printf '  Core autostart / Автозапуск ядер: enabled (%s)\n' "$INIT_SYSTEM"
@@ -862,7 +889,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     fi
     [[ ",$CORES," == *,xray,* ]] && printf '    REALITY uTLS: %s\n' "$UTLS_PROFILE"
     [[ ",$CORES," == *,hysteria,* ]] && printf '    Hysteria ECH: %s\n' "$HYSTERIA_ECH"
-    printf '    HTTPS subscription: TCP %s (credentials generated after health-check)\n' "$subscription_port"
+    [[ "$TELEMT_ONLY" == true ]] || \
+        printf '    HTTPS subscription: TCP %s (credentials generated after health-check)\n' "$subscription_port"
 else
     printf '  First user / Первый пользователь: skipped (no credentials/subscription)\n'
 fi
@@ -1399,14 +1427,26 @@ start_core_service() {
     [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]] || return 0
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         root_exec systemctl restart "xraydo-$core.service" >/dev/null
-        root_exec systemctl is-active --quiet "xraydo-$core.service"
+        root_exec systemctl is-active --quiet "xraydo-$core.service" || return 1
     else
         if root_exec rc-service "xraydo-$core" status >/dev/null 2>&1; then
             root_exec rc-service "xraydo-$core" restart >/dev/null
         else
             root_exec rc-service "xraydo-$core" start >/dev/null
         fi
-        root_exec rc-service "xraydo-$core" status >/dev/null
+        root_exec rc-service "xraydo-$core" status >/dev/null || return 1
+    fi
+    if [[ "$core" == "telemt" ]]; then
+        local attempt
+        for attempt in {1..30}; do
+            if root_exec "$PREFIX/bin/telemt" healthcheck \
+                "$CONFIG_DIR/cores/telemt/telemt.toml" --mode liveness \
+                >/dev/null 2>&1; then
+                return 0
+            fi
+            sleep 1
+        done
+        return 1
     fi
 }
 
@@ -1455,26 +1495,30 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     [[ ",$CORES," == *,xray,* ]] && provision_core_service xray "$PREFIX/bin/xray" "run -config $CONFIG_DIR/cores/xray/config.json" config.json
     [[ ",$CORES," == *,hysteria,* ]] && provision_core_service hysteria "$PREFIX/bin/hysteria" "server -c $CONFIG_DIR/cores/hysteria/config.yaml" config.yaml
     [[ ",$CORES," == *,telemt,* ]] && provision_core_service telemt "$PREFIX/bin/telemt" "$CONFIG_DIR/cores/telemt/telemt.toml" telemt.toml
-    if [[ "$TLS_MODE" == "private-ca" ]]; then
-        provision_tls_renewer
-    else
-        provision_certbot_renewer
+    if [[ "$TELEMT_ONLY" != true ]]; then
+        if [[ "$TLS_MODE" == "private-ca" ]]; then
+            provision_tls_renewer
+        else
+            provision_certbot_renewer
+        fi
     fi
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         root_exec systemctl daemon-reload
         [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
         [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
         [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        if [[ "$TLS_MODE" == "private-ca" ]]; then
-            root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
-        else
-            root_exec systemctl enable --now xraydo-certbot-renew.timer >/dev/null
+        if [[ "$TELEMT_ONLY" != true ]]; then
+            if [[ "$TLS_MODE" == "private-ca" ]]; then
+                root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
+            else
+                root_exec systemctl enable --now xraydo-certbot-renew.timer >/dev/null
+            fi
         fi
     else
         [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
         [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
         [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        if [[ "$TLS_MODE" == "private-ca" ]]; then
+        if [[ "$TELEMT_ONLY" != true && "$TLS_MODE" == "private-ca" ]]; then
             root_exec rc-update add xraydo-tls-renew default >/dev/null
             root_exec rc-service xraydo-tls-renew start >/dev/null
         fi
@@ -1493,7 +1537,9 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     [[ "$url_host" == *:* && "$url_host" != \[*\] ]] && url_host="[$url_host]"
     subscription_base="https://$url_host:$subscription_port"
 
-    if [[ "$TLS_MODE" == "private-ca" ]]; then
+    if [[ "$TELEMT_ONLY" == true ]]; then
+        : # Telemt Fake TLS does not use an X.509 certificate.
+    elif [[ "$TLS_MODE" == "private-ca" ]]; then
         quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
         if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
@@ -1509,7 +1555,9 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         fi
         quiet_root "Let's Encrypt certificate" "$BINARY_PATH" --json tls acme-issue "${acme_args[@]}" || fail "Let's Encrypt certificate issuance failed"
     fi
-    quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
+    if [[ "$TELEMT_ONLY" != true ]]; then
+        quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
+    fi
 
     users_json="$TEMP_DIR/users.json"
     root_exec "$BINARY_PATH" --json user list >"$users_json"
@@ -1597,7 +1645,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         fi
     fi
 
-    if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
+    if [[ "$TELEMT_ONLY" != true && "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
         provision_subscription_service
         if [[ "$INIT_SYSTEM" == "systemd" ]]; then
             root_exec systemctl daemon-reload
@@ -1610,7 +1658,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         fi
     fi
 
-    if [[ "$first_user_created" == true ]]; then
+    if [[ "$first_user_created" == true && "$TELEMT_ONLY" != true ]]; then
         token_file="$TEMP_DIR/subscription-token"
         (umask 077; printf '%s' "$subscription_token" >"$token_file")
         subscription_url="$subscription_base/sub/$subscription_token"
@@ -1651,6 +1699,41 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     fi
 fi
 
+if [[ "$TELEMT_ONLY" == true ]]; then
+    [[ "$telemt_state" == "configured and healthy" ]] || \
+        fail "Telemt installation did not pass its service health-check"
+    telemt_json="$TEMP_DIR/telemt-links.json"
+    root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" || \
+        fail "Telemt is running, but its connection links could not be rendered"
+    chmod 0600 "$telemt_json"
+    mtproto_link="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(next((item["uri"] for item in data["links"] if item.get("format") == "tg_uri"), ""))' "$telemt_json")"
+    mtproto_https_link="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(next((item["uri"] for item in data["links"] if item.get("format") == "https_uri"), ""))' "$telemt_json")"
+    [[ -n "$mtproto_link" && -n "$mtproto_https_link" ]] || \
+        fail "Telemt connection links are missing after configuration"
+    credentials_file="$DATA_DIR/telemt-$FIRST_USER_NAME.txt"
+    credentials_tmp="$TEMP_DIR/telemt-credentials.txt"
+    (umask 077; {
+        printf 'Telegram: %s\n' "$mtproto_link"
+        printf 'Telegram HTTPS: %s\n' "$mtproto_https_link"
+    } >"$credentials_tmp")
+    root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        printf '\n====================================================================\n'
+        printf '                    УСТАНОВКА ЗАВЕРШЕНА\n'
+        printf '====================================================================\n\n'
+        printf 'Ссылка для подключения Telegram Proxy:\n%s\n\n' "$mtproto_link"
+        printf 'HTTPS-ссылка:\n%s\n\n' "$mtproto_https_link"
+        printf 'Копия сохранена с правами 0600: %s\n' "$credentials_file"
+    else
+        printf '\n====================================================================\n'
+        printf '                      INSTALLATION SUCCESS\n'
+        printf '====================================================================\n\n'
+        printf 'Your Telegram Proxy connection link:\n%s\n\n' "$mtproto_link"
+        printf 'HTTPS connection link:\n%s\n\n' "$mtproto_https_link"
+        printf 'A mode-0600 copy is stored at: %s\n' "$credentials_file"
+    fi
+fi
+
 printf '\n%s\n' "$DONE_TEXT"
 printf '  xraydo: %s\n' "$BINARY_PATH"
 printf '  config: %s\n' "$CONFIG_PATH"
@@ -1662,7 +1745,11 @@ fi
 if [[ "$FIRST_USER_MODE" == "skip" ]]; then
     printf '  first user: skipped; no credentials or subscription were created\n'
 else
-    printf '  first user: %s; limits=%s, duration=%s, traffic=%s, devices=1, IP=%s\n' \
-        "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+    if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
+        printf '  first user: %s; limits=unlimited, devices=1\n' "$FIRST_USER_NAME"
+    else
+        printf '  first user: %s; limits=%s, duration=%s, traffic=%s, devices=1, IP=%s\n' \
+            "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+    fi
 fi
 printf '  command: sudo xraydo\n'

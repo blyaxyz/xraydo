@@ -48,6 +48,33 @@ sudo ./install.sh --non-interactive --yes --lang en
 sudo ./install.sh --non-interactive --yes --answers answers.example
 ```
 
+For a short Telemt-only installation, use:
+
+```sh
+sudo ./install.sh --telemt-only
+```
+
+This mode asks only for the interface language, Telemt port, and Fake TLS
+domain. It automatically detects the public address, creates or reuses the
+`hello` user, validates the generated configuration with Telemt, installs and
+enables `xraydo-telemt`, and prints both `tg://proxy` and
+`https://t.me/proxy` connection links. A mode-0600 copy is stored under
+`/var/lib/xraydo`. The selected port is never silently replaced; an unrelated
+listener produces an explicit error.
+
+Для короткой установки только Telemt выполните:
+
+```sh
+sudo ./install.sh --telemt-only
+```
+
+Этот режим спрашивает только язык, порт Telemt и домен Fake TLS. Публичный адрес,
+пользователь `hello`, проверка конфигурации, systemd/OpenRC-служба и автозапуск
+настраиваются автоматически. В конце установщик показывает ссылки `tg://proxy`
+и `https://t.me/proxy`, а их копию сохраняет в root-only файле с правами `0600`.
+Занятый посторонним процессом порт вызывает понятную ошибку и не заменяется
+другим без ведома пользователя.
+
 The same interactive menu provides two removal modes. `Uninstall` stops and
 removes xraydo services, programs, and managed core binaries while preserving
 configuration and state. `Purge` additionally removes users, credentials,
