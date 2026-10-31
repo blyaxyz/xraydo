@@ -310,7 +310,10 @@ dry-run. Раздел «Все команды CLI» автоматически �
 The REALITY command resolves and blocks non-public targets, requires a trusted
 TLS 1.3 + HTTP/2 handshake for the selected SNI, asks Xray itself to generate
 X25519 keys, and validates the generated JSON with `xray run -test` before an
-atomic replacement. Private keys are never returned in command output.
+atomic replacement. The implicit target and SNI are always `ya.ru`; automatic
+latency ranking cannot silently replace it with Amazon or another candidate.
+Alternative targets require an explicit option or interactive selection.
+Private keys are never returned in command output.
 The Xray client `email` field is an internal statistics key formatted as
 `access-key:<immutable AccessKey ID>`; it never uses the mutable display name.
 Human-readable names exist only in dynamically rendered subscription remarks,

@@ -31,6 +31,7 @@ MAX_CIDR_ADDRESSES = 256
 MAX_CONCURRENCY = 32
 MAX_TIMEOUT = 10.0
 DEFAULT_DISCOVERY_TIMEOUT = 4.0
+DEFAULT_REALITY_TARGET = "ya.ru"
 
 
 class RealityError(ValueError):
@@ -273,10 +274,18 @@ def profile_target() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     report = discover_targets(["%s:%s" % (item["host"], item.get("port", 443)) for item in candidates])
     if not report["recommended"]:
         raise RealityError("no_verified_target")
-    selected = report["recommended"][0]
-    selected["verified_alternatives"] = report["recommended"][1:]
+    selected = next(
+        (
+            item for item in report["recommended"]
+            if (item.get("host") or _split_target(item["target"])[0])
+            == DEFAULT_REALITY_TARGET
+        ),
+        report["recommended"][0],
+    )
+    alternatives = [item for item in report["recommended"] if item is not selected]
+    selected["verified_alternatives"] = alternatives
     selected["failed_candidates"] = report["rejected"]
-    return selected, report["recommended"][1:]
+    return selected, alternatives
 
 
 def fingerprint_profiles(binary: Optional[str] = None) -> dict[str, Any]:
@@ -422,32 +431,24 @@ def configure_reality(*, binary: str, destination: Path, user: dict[str, Any],
                 listener.bind(("0.0.0.0", listen_port))
         except OSError as error:
             raise RealityError("reality_port_busy") from error
-    if target_host is None:
-        discovered, _alternatives = profile_target()
-        selected_host = discovered.get("host") or _split_target(discovered["target"])[0]
-        selected_port = int(discovered.get("port") or _split_target(discovered["target"])[1])
-        scan = scan_result(selected_host, selected_port, MAX_TIMEOUT,
-                           sni=discovered.get("server_name"), xver=xver, node_id=node_id)
-        _record_check(store, scan)
-        if not scan.get("suitable", True):
+    target_host = target_host or DEFAULT_REALITY_TARGET
+    sni = sni or target_host
+    exact = "%s/%s" % (target_host, sni)
+    if allow_private_single and private_confirmation != exact:
+        raise RealityError("private_confirmation_required")
+    scan = scan_result(target_host, target_port, MAX_TIMEOUT, sni=sni, xver=xver,
+                       allow_private=allow_private_single, node_id=node_id)
+    _record_check(store, scan)
+    if allow_private_single:
+        _audit(store, "reality.private_target_allowed", node_id, exact, ["target", "sni"])
+    if not scan.get("suitable", True):
+        if scan.get("reason") == "blocked_address":
+            raise RealityError("blocked_address")
+        if not force_unverified_target or force_confirmation != exact:
             raise RealityError("unverified_target")
-    else:
-        exact = "%s/%s" % (target_host, sni or target_host)
-        if allow_private_single and private_confirmation != exact:
-            raise RealityError("private_confirmation_required")
-        scan = scan_result(target_host, target_port, MAX_TIMEOUT, sni=sni, xver=xver,
-                           allow_private=allow_private_single, node_id=node_id)
-        _record_check(store, scan)
-        if allow_private_single:
-            _audit(store, "reality.private_target_allowed", node_id, exact, ["target", "sni"])
-        if not scan.get("suitable", True):
-            if scan.get("reason") == "blocked_address":
-                raise RealityError("blocked_address")
-            if not force_unverified_target or force_confirmation != exact:
-                raise RealityError("unverified_target")
-            _audit(store, "reality.force_unverified", node_id, exact, ["target", "sni", "reason"])
-            scan.update({"host": target_host, "port": target_port, "target": "%s:%d" % (target_host, target_port),
-                         "server_name": sni or target_host, "sni": sni or target_host})
+        _audit(store, "reality.force_unverified", node_id, exact, ["target", "sni", "reason"])
+        scan.update({"host": target_host, "port": target_port, "target": "%s:%d" % (target_host, target_port),
+                     "server_name": sni, "sni": sni})
     private_key, public_key = generate_x25519(binary)
     short_id, spider_x = secrets.token_hex(8), "/" + secrets.token_urlsafe(8)
     config = build_server_config(user_id=credentials["xray_uuid"], stats_id="access-key:%s" % access_key_id,

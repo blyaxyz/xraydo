@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from xraydo.reality import (
+    DEFAULT_REALITY_TARGET,
     MAX_CIDR_ADDRESSES,
     RealityError,
     _proxy_header,
@@ -85,6 +86,34 @@ class RealityTests(unittest.TestCase):
             self.assertEqual(endpoint["stats_id"], client["email"])
             self.assertEqual(destination.stat().st_mode & 0o777, 0o640)
 
+    def test_missing_target_defaults_to_ya_ru_for_target_and_sni(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "config.json"
+            destination.write_text("{}\n", encoding="utf-8")
+            scan = {
+                "target": "ya.ru:443", "server_name": "ya.ru",
+                "resolved_ips": ["77.88.55.242"], "tls_version": "TLSv1.3",
+                "alpn": "h2", "sans": ["ya.ru"], "latency_ms": 10.0,
+            }
+            with mock.patch("xraydo.reality.scan_target", return_value=scan) as probe:
+                configure_reality(
+                    binary=str(self.fake_xray(root)), destination=destination,
+                    user={
+                        "name": "alice",
+                        "access_key_id": "22222222-2222-4222-8222-222222222222",
+                        "credentials": {"xray_uuid": "11111111-1111-4111-8111-111111111111"},
+                    },
+                    target_host=None, target_port=443, listen_port=443,
+                    fingerprint="firefox",
+                )
+            self.assertEqual(probe.call_args.args[:2], (DEFAULT_REALITY_TARGET, 443))
+            self.assertEqual(probe.call_args.kwargs["sni"], DEFAULT_REALITY_TARGET)
+            config = json.loads(destination.read_text(encoding="utf-8"))
+            settings = config["inbounds"][0]["streamSettings"]["realitySettings"]
+            self.assertEqual(settings["target"], "ya.ru:443")
+            self.assertEqual(settings["serverNames"], ["ya.ru"])
+
     def test_invalid_generated_config_preserves_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -150,6 +179,23 @@ class RealityTests(unittest.TestCase):
         self.assertEqual(selected["failed_candidates"][0]["target"], "ya.ru:443")
         self.assertEqual(selected["failed_candidates"][0]["reason"], "reality_tls_failed")
         self.assertEqual(alternatives, [])
+
+    def test_profile_prefers_verified_ya_ru_over_faster_alternative(self) -> None:
+        amazon = {
+            "target": "www.amazon.com:443",
+            "server_name": "www.amazon.com",
+            "latency_ms": 1.0,
+        }
+        ya = {"target": "ya.ru:443", "server_name": "ya.ru", "latency_ms": 20.0}
+        with mock.patch(
+            "xraydo.reality.discover_targets",
+            return_value={"recommended": [amazon, ya], "rejected": []},
+        ):
+            selected, alternatives = profile_target()
+        self.assertEqual(selected["target"], "ya.ru:443")
+        self.assertEqual(
+            [item["target"] for item in alternatives], ["www.amazon.com:443"]
+        )
 
     def test_ip_without_sni_extracts_non_wildcard_san_then_verifies(self) -> None:
         unverified = {"sans": ["*.example.test", "edge.example.test"]}

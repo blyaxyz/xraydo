@@ -149,6 +149,9 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Fixed
 
+- REALITY creation now consistently defaults both target and SNI to `ya.ru` in
+  the installer, direct CLI, menu, and internal API. Candidate latency ranking
+  can no longer silently select Amazon when no target was supplied.
 - The system state root now remains traversable/readable as a directory while
   `state.json`, TLS keys, and other sensitive contents keep their restrictive
   modes. This lets isolated Xray, Hysteria, and Telemt service accounts reach

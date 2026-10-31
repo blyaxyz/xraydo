@@ -26,8 +26,8 @@ from .menu import run_interactive
 from .nodes import NodeService
 from .node_agent import NodeAgent, enroll as enroll_node_agent
 from .reality import (
-    FINGERPRINTS, configure_reality, discover_targets, fingerprint_profiles,
-    scan_result,
+    DEFAULT_REALITY_TARGET, FINGERPRINTS, configure_reality, discover_targets,
+    fingerprint_profiles, scan_result,
 )
 from .roles import ROLES, RoleService
 from .services import control_service, core_version, service_logs, service_status
@@ -506,7 +506,7 @@ def parser() -> argparse.ArgumentParser:
     reality_configure.add_argument("--node", default="local")
     reality_configure.add_argument("--user", default="default")
     reality_configure.add_argument("--access-key")
-    reality_configure.add_argument("--target")
+    reality_configure.add_argument("--target", default=DEFAULT_REALITY_TARGET)
     reality_configure.add_argument("--sni")
     reality_configure.add_argument("--target-port", type=int, default=443)
     reality_configure.add_argument("--listen-port", type=int, default=443)
@@ -526,7 +526,10 @@ def parser() -> argparse.ArgumentParser:
     reality = core_commands.add_parser("reality")
     reality.add_argument("--user", default="default")
     reality.add_argument("--access-key")
-    reality.add_argument("--target", help="explicit target; omit to scan the built-in candidate list")
+    reality.add_argument(
+        "--target", default=DEFAULT_REALITY_TARGET,
+        help=f"REALITY target (default: {DEFAULT_REALITY_TARGET})",
+    )
     reality.add_argument("--target-port", type=int, default=443)
     reality.add_argument("--listen-port", type=int, default=443)
     reality.add_argument("--fingerprint", choices=FINGERPRINTS, default="firefox")
