@@ -37,6 +37,14 @@ class Store:
         self.data_dir = data_dir or default_data_dir()
         self.path = self.data_dir / "state.json"
 
+    def _data_dir_mode(self) -> int:
+        # Core services use separate unprivileged accounts and keep their
+        # working directories below the system data root.  Telemt securely
+        # opens every parent directory while rejecting symlinks, so it needs
+        # read/search permission here.  state.json remains 0600 and TLS/key
+        # directories retain their stricter modes.
+        return 0o755 if self.data_dir == Path("/var/lib/xraydo") else 0o700
+
     @staticmethod
     def initial() -> dict[str, Any]:
         return {
@@ -267,8 +275,9 @@ class Store:
         return data
 
     def save(self, data: dict[str, Any]) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.data_dir, 0o700)
+        directory_mode = self._data_dir_mode()
+        self.data_dir.mkdir(parents=True, exist_ok=True, mode=directory_mode)
+        os.chmod(self.data_dir, directory_mode)
         descriptor, temporary = tempfile.mkstemp(prefix=".state-", dir=self.data_dir)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:

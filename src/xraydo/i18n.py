@@ -20,8 +20,10 @@ class Translator:
         with path.open(encoding="utf-8") as handle:
             return json.load(handle)
 
-    def get(self, key: str, **values: Any) -> str:
-        template = self._messages.get(key, self._fallback.get(key, key))
+    def get(self, message_key: str, **values: Any) -> str:
+        template = self._messages.get(
+            message_key, self._fallback.get(message_key, message_key)
+        )
         return template.format(**values)
 
 

@@ -48,9 +48,13 @@ def _service_state(core: str) -> str:
     service = f"xraydo-{core}"
     if shutil.which("systemctl") and Path("/run/systemd/system").is_dir():
         result = _run(["systemctl", "is-active", service])
-        if result and result.returncode == 0:
-            return "running"
-        return "stopped"
+        if result:
+            state = result.stdout.strip()
+            if state == "active":
+                return "running"
+            if state:
+                return state
+        return "unknown"
     if shutil.which("rc-service"):
         result = _run(["rc-service", service, "status"])
         if result and result.returncode == 0:

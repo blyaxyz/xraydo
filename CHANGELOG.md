@@ -102,6 +102,14 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Fixed
 
+- The system state root now remains traversable/readable as a directory while
+  `state.json`, TLS keys, and other sensitive contents keep their restrictive
+  modes. This lets isolated Xray, Hysteria, and Telemt service accounts reach
+  their own working directories; Telemt can also perform its required
+  symlink-safe parent-chain validation instead of entering a restart loop.
+- Core health output now preserves non-active systemd states such as
+  `activating` and `failed` instead of reporting every non-zero `is-active`
+  result as merely `stopped`.
 - The standalone installer now pins the source archive that actually matches
   its generated services, treats release data JSON as optional for older
   payloads, and smoke-tests both status and the TLS renewer before enabling it.

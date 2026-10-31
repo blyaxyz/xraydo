@@ -78,6 +78,8 @@ grep -q 'core telemt' "$ROOT_DIR/install.sh"
 grep -q 'hysteria.*ech --public-name' "$ROOT_DIR/install.sh"
 grep -q 'subscription qr.*--token-file' "$ROOT_DIR/install.sh"
 grep -q 'qrencode -t ANSIUTF8 -o -' "$ROOT_DIR/install.sh"
+grep -q 'NON_INTERACTIVE.*-t 0.*-t 1.*-w /dev/tty' "$ROOT_DIR/install.sh"
+grep -q 'install -d -m 0755 /var/lib/xraydo' "$ROOT_DIR/install.sh"
 
 health_line="$(grep -n 'Xray version health-check' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"
 create_line="$(grep -n 'user create.*FIRST_USER_NAME' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"

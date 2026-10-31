@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from xraydo.cli import parser
+from xraydo.health import _service_state
 from xraydo.services import (
     CoreServiceError,
     control_service,
@@ -24,6 +25,17 @@ def completed(
 
 
 class ServiceTests(unittest.TestCase):
+    def test_core_health_preserves_systemd_restart_state(self) -> None:
+        with (
+            mock.patch("xraydo.health.shutil.which", return_value="/usr/bin/systemctl"),
+            mock.patch("xraydo.health.Path.is_dir", return_value=True),
+            mock.patch(
+                "xraydo.health._run",
+                return_value=completed([], returncode=3, stdout="activating\n"),
+            ),
+        ):
+            self.assertEqual(_service_state("xray"), "activating")
+
     def test_local_service_commands_are_exposed_for_both_cores(self) -> None:
         telemt = parser().parse_args(["telemt", "logs", "--lines", "25"])
         hysteria = parser().parse_args(["hysteria", "restart"])

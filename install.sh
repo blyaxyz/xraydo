@@ -40,8 +40,8 @@ set -Eeuo pipefail
 # This file is intentionally self-contained. It can be downloaded on its own;
 # no checkout of the repository is required.
 readonly INSTALLER_VERSION="0.2.0"
-readonly XRAYDO_REF="ec7eedb7381645d34b6827821b781da3d406e540"
-readonly XRAYDO_ARCHIVE_SHA256="d34331f1b47e9da4779ab467f6e1b10553cdd18445f475aa14711cc9d6beec31"
+readonly XRAYDO_REF="0a9042c1c4301a64540227a8c4d15e291884f49d"
+readonly XRAYDO_ARCHIVE_SHA256="805dc650ba89786ebe12f7715546a9da939c960bb619ef59675c3bfdf67edc41"
 readonly XRAYDO_ARCHIVE_URL="https://github.com/blyaxyz/xraydo/archive/${XRAYDO_REF}.tar.gz"
 readonly XRAY_VERSION="v26.10.29"
 readonly HYSTERIA_VERSION="app/v2.13.0"
@@ -917,7 +917,15 @@ printf '#!/usr/bin/env bash\nXRAYDO_CONFIG=%q XRAYDO_DATA_DIR=%q PYTHONPATH=%q e
     "$CONFIG_PATH" "$DATA_DIR" "$LIBRARY_DIR" > "$wrapper_path"
 chmod 0755 "$wrapper_path"
 install_exec install -m 0755 "$wrapper_path" "$BINARY_PATH"
-install_exec install -d -m 0700 "$DATA_DIR"
+# The root state file remains mode 0600 and sensitive subdirectories remain
+# mode 0700.  Core processes need to open and validate this parent directory
+# before reaching their own mode-0750 working directories (Telemt explicitly
+# walks the complete path without following symlinks).
+if [[ "$DATA_DIR" == "/var/lib/xraydo" ]]; then
+    install_exec install -d -m 0755 "$DATA_DIR"
+else
+    install_exec install -d -m 0700 "$DATA_DIR"
+fi
 
 if [[ ! -e "$CONFIG_PATH" ]]; then
     config_path="$TEMP_DIR/config.json"
@@ -1102,7 +1110,7 @@ enable_core_autostart() {
 }
 
 provision_tls_renewer() {
-    root_exec install -d -m 0700 /var/lib/xraydo
+    root_exec install -d -m 0755 /var/lib/xraydo
     root_exec install -d -m 0750 /var/log/xraydo/tls-renew
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         local unit="$TEMP_DIR/xraydo-tls-renew.service"
@@ -1241,6 +1249,17 @@ quiet_root() {
     fi
 }
 
+managed_leaf_matches_public_host() {
+    local cert="$DATA_DIR/tls/leaf/current/server.crt"
+    local key="$DATA_DIR/tls/leaf/current/server.key"
+    [[ -s "$cert" && -s "$key" ]] || return 1
+    if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        root_exec openssl x509 -in "$cert" -noout -checkip "$PUBLIC_HOST" >/dev/null 2>&1
+    else
+        root_exec openssl x509 -in "$cert" -noout -checkhost "$PUBLIC_HOST" >/dev/null 2>&1
+    fi
+}
+
 # Installation health must pass before any first-user secret is generated.
 XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" --json status >/dev/null
 XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" tls renew-daemon --once >/dev/null
@@ -1282,9 +1301,15 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
 
     quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
     if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
+        if ! quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST"; then
+            managed_leaf_matches_public_host || fail "TLS certificate issuance failed"
+            printf 'Warning: TLS CLI reporting failed after issuance; verified certificate SAN and continuing.\n' >&2
+        fi
     else
-        quiet_root "server DNS certificate" "$BINARY_PATH" --json tls issue-self --domain "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
+        if ! quiet_root "server DNS certificate" "$BINARY_PATH" --json tls issue-self --domain "$PUBLIC_HOST"; then
+            managed_leaf_matches_public_host || fail "TLS certificate issuance failed"
+            printf 'Warning: TLS CLI reporting failed after issuance; verified certificate SAN and continuing.\n' >&2
+        fi
     fi
     quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
 
@@ -1393,7 +1418,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
         chmod 0600 "$telemt_json"
         mtproto_link="$(sed -n 's/.*"uri": "\(tg:\/\/proxy?[^"]*\)".*/\1/p' "$telemt_json" | head -n 1)"
-        if [[ -w /dev/tty ]]; then
+        if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
             {
                 printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
                 printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"

@@ -3,8 +3,16 @@ import json
 import unittest
 from pathlib import Path
 
+from xraydo.i18n import Translator
+
 
 class LocaleTests(unittest.TestCase):
+    def test_translation_can_format_key_placeholder(self) -> None:
+        translator = Translator("en")
+        rendered = translator.get("tls.leaf_ready", cert="server.crt", key="server.key")
+        self.assertIn("server.crt", rendered)
+        self.assertIn("server.key", rendered)
+
     @staticmethod
     def _locale_dir() -> Path:
         return Path(__file__).resolve().parents[1] / "src" / "xraydo" / "locales"

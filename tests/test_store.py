@@ -9,6 +9,10 @@ from xraydo.store import Store
 
 
 class StoreTests(unittest.TestCase):
+    def test_system_data_root_is_searchable_by_isolated_core_accounts(self) -> None:
+        self.assertEqual(Store(Path("/var/lib/xraydo"))._data_dir_mode(), 0o755)
+        self.assertEqual(Store(Path("/tmp/xraydo-test-state"))._data_dir_mode(), 0o700)
+
     def test_legacy_state_is_migrated_without_losing_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
