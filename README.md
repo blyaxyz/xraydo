@@ -48,14 +48,59 @@ sudo ./install.sh --non-interactive --yes --lang en
 sudo ./install.sh --non-interactive --yes --answers answers.example
 ```
 
+The same interactive menu provides two removal modes. `Uninstall` stops and
+removes xraydo services, programs, and managed core binaries while preserving
+configuration and state. `Purge` additionally removes users, credentials,
+subscription state, TLS/private keys, logs, and dedicated system accounts; it
+shows the complete target list and requires a separate exact confirmation.
+
+Это же меню предлагает два режима удаления. `Uninstall` останавливает и удаляет
+сервисы, программу и управляемые ядра, сохраняя конфигурацию и state. `Purge`
+дополнительно удаляет пользователей, credentials, подписки, TLS/private keys,
+логи и отдельные системные учётные записи после отдельного точного подтверждения.
+Общие системные пакеты не удаляются автоматически, поскольку они могут
+использоваться другими программами.
+
+Для автоматизации доступны эквивалентные команды:
+
+```sh
+sudo ./install.sh --uninstall --non-interactive --yes
+sudo ./install.sh --purge --non-interactive --yes
+./install.sh --purge --dry-run --non-interactive
+sudo ./install.sh --update --non-interactive --yes
+```
+
 Profiles are `quick`, `master`, `node`, and `advanced`; roles are `standalone`,
 `master`, and `node`. Non-interactive answer files use a strict `KEY=VALUE`
 format and reject unknown keys instead of executing the file as shell code.
 
+The wizard can create one first global user with independent Xray, Hysteria 2,
+Telemt, and subscription credentials, or skip user creation. It validates the
+installed cores before generating credentials, applies the selected quota
+profile, configures only verified endpoints, and shows the subscription and
+MTProto links plus terminal QR codes outside the installation log. Without a
+TTY, one-time credentials are written to a root-only bootstrap file whose path
+is printed; move it securely and delete it after import.
+
+Мастер может создать одного глобального пользователя с независимыми данными
+доступа Xray, Hysteria 2, Telemt и подписки либо пропустить этот шаг. Сначала он
+проверяет установленные ядра, затем применяет профиль лимитов и публикует только
+проверенные endpoint. URL и QR показываются вне журнала установки; без TTY они
+записываются в одноразовый root-only файл, который нужно безопасно перенести и
+удалить после импорта.
+
 On the default `/usr/local` installation, each selected core receives its own
 locked system account, configuration/data/log directories, and hardened
-`xraydo-<core>` systemd or OpenRC unit. Units remain disabled until a validated
-configuration exists. The installer never opens firewall ports automatically.
+`xraydo-<core>` systemd or OpenRC unit. Every selected unit is immediately
+enabled for automatic startup. It starts only after a validated configuration
+exists, is health-checked when configured, and resumes automatically after a
+server reboot. Unselected cores have no unit. The installer never opens firewall
+ports automatically.
+
+При установке в `/usr/local` каждое выбранное ядро получает отдельный
+`xraydo-<core>` unit. Он сразу добавляется в автозагрузку systemd/OpenRC,
+запускается после появления проверенной конфигурации и автоматически
+восстанавливается после перезагрузки сервера.
 
 Main commands / основные команды:
 
@@ -159,6 +204,13 @@ xraydo hysteria diagnostics --node de-1
 xraydo hysteria collect-stats --node local --secret '<trafficStats secret>'
 xraydo hysteria revoke-key <accessKeyID> --node all
 xraydo core telemt --user bob --server 203.0.113.10 --port 8443
+xraydo telemt build --version 3.5.14 --profile economy
+xraydo telemt install --node all --artifact <artifactID>
+xraydo telemt check-update --node all
+xraydo telemt user add bob --node all --mode tls
+xraydo telemt link bob
+xraydo telemt collect-stats --api-auth 'Bearer <secret>'
+xraydo telemt diagnostics --api-listen 127.0.0.1:9091 --api-auth 'Bearer <secret>'
 xraydo telemt status
 xraydo telemt logs --lines 100
 sudo xraydo telemt restart
@@ -207,6 +259,27 @@ The Telemt command enables only Fake TLS (`ee`), verifies the masking domain,
 creates an independent 16-byte user secret, binds its authenticated Control API
 to loopback, and runs Telemt's own liveness healthcheck before installing the
 TOML configuration or showing `tg://proxy` and `https://t.me/proxy` links.
+It supports multiple `[access.users]`, Classic/`dd`/`ee` links, and an explicit
+safe masking backend through `--mask-host`, `--mask-port` and
+`--unknown-sni-action mask`. User API mutations are preferred for hot admission
+updates; atomic config replacement plus a controlled restart is retained as the
+fallback for fields Telemt cannot reliably reload.
+
+The Telemt artifact manager can install a SHA-256-verified official release or
+build one artifact on the controller/build host from an exact tag or commit.
+Source builds require Rust 1.88+, use the repository `Cargo.lock` with
+`cargo build --locked`, and record commit, target, profile, toolchain, lockfile
+digest and binary digest. The `economy` profile uses one Cargo job and disables
+LTO to lower peak build memory. Worker nodes never compile by default: a cached,
+verified artifact is distributed sequentially and each node must verify its
+SHA-256 before reporting success. Version history supports rolling updates and
+checksum-verified rollback.
+
+Telegram links remain in the separate `mtproto` subscription collection and are
+published only after node synchronization succeeds. Telemt API polling uses a
+per-node cumulative cursor so `total_octets` is not counted twice; the API does
+not reliably split that value into upload/download, and connection/IP precision
+depends on the runtime telemetry features enabled in Telemt.
 
 The local `telemt` and `hysteria` command groups control the hardened units
 created by the installer on systemd and OpenRC hosts. Status and version output

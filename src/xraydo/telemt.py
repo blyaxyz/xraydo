@@ -57,6 +57,10 @@ def build_config(
     handshake_timeout: int = 60,
     keepalive: int = 15,
     ack_timeout: int = 90,
+    users: Optional[dict[str, str]] = None,
+    mask_host: Optional[str] = None,
+    mask_port: int = 443,
+    unknown_sni_action: str = "reject_handshake",
 ) -> str:
     value = _toml_string
     ad_tag_line = f"ad_tag = {value(ad_tag)}\n" if ad_tag else ""
@@ -64,6 +68,10 @@ def build_config(
     listener_sections = "\n\n".join(
         f"[[server.listeners]]\nip = {value(listener)}" for listener in listeners
     )
+    user_map = dict(users or {})
+    user_map[username] = user_secret
+    user_lines = "\n".join(f"{value(name)} = {value(secret)}" for name, secret in user_map.items())
+    mask_target = mask_host or tls_domain
     return f"""[general]
 use_middle_proxy = {str(use_middle_proxy).lower()}
 log_level = "normal"
@@ -107,12 +115,14 @@ minimal_runtime_cache_ttl_ms = 1000
 [censorship]
 tls_domain = {value(tls_domain)}
 mask = true
+mask_host = {value(mask_target)}
+mask_port = {mask_port}
 tls_emulation = true
 tls_front_dir = {value(str(data_dir / "tlsfront"))}
-unknown_sni_action = "reject_handshake"
+unknown_sni_action = {value(unknown_sni_action)}
 
 [access.users]
-{value(username)} = {value(user_secret)}
+{user_lines}
 """
 
 
@@ -215,6 +225,10 @@ def configure_telemt(
     handshake_timeout: int = 60,
     keepalive: int = 15,
     ack_timeout: int = 90,
+    existing_users: Optional[dict[str, str]] = None,
+    mask_host: Optional[str] = None,
+    mask_port: int = 443,
+    unknown_sni_action: str = "reject_handshake",
 ) -> dict[str, Any]:
     if not 1 <= port <= 65535 or not 1 <= api_port <= 65535:
         raise TelemtError("telemt_invalid_port")
@@ -237,13 +251,18 @@ def configure_telemt(
         raise TelemtError("telemt_invalid_listener")
     if any(not 1 <= timeout <= 86_400 for timeout in (first_byte_timeout, handshake_timeout, keepalive, ack_timeout)):
         raise TelemtError("telemt_invalid_timeout")
+    if not 1 <= mask_port <= 65535 or unknown_sni_action not in {"mask", "reject_handshake"}:
+        raise TelemtError("telemt_invalid_mask")
+    if mask_host is not None and (not mask_host.strip() or any(char.isspace() for char in mask_host)):
+        raise TelemtError("telemt_invalid_mask")
     if not destination.exists():
         if not _available_tcp_port(port):
             raise TelemtError("telemt_port_busy")
         if not _available_tcp_port(api_port):
             raise TelemtError("telemt_api_port_busy")
     selected_domain, target_report = select_tls_domain(tls_domain)
-    username = "u_" + user["id"].replace("-", "")[:16]
+    identity = str(user.get("access_key_id") or user["id"])
+    username = "k_" + identity.replace("-", "")
     user_secret = protocol_credentials(user, "telemt")["telemt_secret"]
     api_secret = secrets.token_urlsafe(32)
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
@@ -273,6 +292,8 @@ def configure_telemt(
         handshake_timeout=handshake_timeout,
         keepalive=keepalive,
         ack_timeout=ack_timeout,
+        users=existing_users, mask_host=mask_host, mask_port=mask_port,
+        unknown_sni_action=unknown_sni_action,
     )
     validation_port = _ephemeral_port()
     validation_api_port = _ephemeral_port()
@@ -296,6 +317,8 @@ def configure_telemt(
         handshake_timeout=handshake_timeout,
         keepalive=keepalive,
         ack_timeout=ack_timeout,
+        users=existing_users, mask_host=mask_host, mask_port=mask_port,
+        unknown_sni_action=unknown_sni_action,
     )
     validate_and_install(binary, final_config, validation_config, destination)
     if mode == "tls":
@@ -326,6 +349,8 @@ def configure_telemt(
         "fake_tls_secret": connection_secret if mode == "tls" else None,
         "tls_domain": selected_domain,
         "target_check": target_report,
+        "mask": {"host": mask_host or selected_domain, "port": mask_port,
+                 "unknown_sni_action": unknown_sni_action},
         "api_listen": f"127.0.0.1:{api_port}",
         "api_auth_header": "Bearer " + api_secret,
         "tg_uri": "tg://proxy?" + query,

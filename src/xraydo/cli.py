@@ -32,6 +32,7 @@ from .sync_queue import SyncQueueService, enqueue_node_operation, public_operati
 from .subscriptions import SubscriptionService
 from .subscription_server import serve_https
 from .telemt import configure_telemt
+from .telemt_manager import TelemtManager
 from .tls_manager import TLSManager
 from .users import UserService
 
@@ -485,14 +486,59 @@ def parser() -> argparse.ArgumentParser:
     telemt.add_argument("--handshake-timeout", type=int, default=60)
     telemt.add_argument("--keepalive", type=int, default=15)
     telemt.add_argument("--ack-timeout", type=int, default=90)
+    telemt.add_argument("--mask-host")
+    telemt.add_argument("--mask-port", type=int, default=443)
+    telemt.add_argument("--unknown-sni-action", choices=("mask", "reject_handshake"),
+                        default="reject_handshake")
+    telemt.add_argument("--node", default="local")
     telemt.add_argument("--config", type=Path)
 
-    telemt_admin = commands.add_parser("telemt", help="manage the local Telemt service")
+    telemt_admin = commands.add_parser("telemt", help="build and manage Telemt per node")
     telemt_commands = telemt_admin.add_subparsers(dest="telemt_command", required=True)
     for action in ("start", "stop", "restart", "status", "version"):
-        telemt_commands.add_parser(action)
+        command = telemt_commands.add_parser(action)
+        command.add_argument("--node", default="local")
     telemt_logs = telemt_commands.add_parser("logs")
     telemt_logs.add_argument("--lines", type=int, default=100)
+    telemt_logs.add_argument("--node", default="local")
+    telemt_build = telemt_commands.add_parser("build")
+    telemt_build.add_argument("--version", required=True, dest="build_ref")
+    telemt_build.add_argument("--target")
+    telemt_build.add_argument("--profile", choices=("release", "economy"), default="release")
+    for action in ("install", "update"):
+        command = telemt_commands.add_parser(action)
+        command.add_argument("--node", default="local")
+        command.add_argument("--version")
+        command.add_argument("--artifact")
+        command.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/telemt"))
+    telemt_check = telemt_commands.add_parser("check-update")
+    telemt_check.add_argument("--node", default="local")
+    telemt_rollback = telemt_commands.add_parser("rollback")
+    telemt_rollback.add_argument("--node", default="local")
+    telemt_rollback.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/telemt"))
+    telemt_user = telemt_commands.add_parser("user")
+    telemt_user_commands = telemt_user.add_subparsers(dest="telemt_user_command", required=True)
+    for action in ("add", "revoke"):
+        command = telemt_user_commands.add_parser(action)
+        command.add_argument("user")
+        command.add_argument("--access-key")
+        command.add_argument("--node", default="all")
+        command.add_argument("--mode", choices=("classic", "secure", "tls"), default="tls")
+    telemt_link = telemt_commands.add_parser("link")
+    telemt_link.add_argument("user")
+    telemt_link.add_argument("--node")
+    telemt_diagnostics = telemt_commands.add_parser("diagnostics")
+    telemt_diagnostics.add_argument("--node", default="local")
+    telemt_diagnostics.add_argument("--api-listen")
+    telemt_diagnostics.add_argument("--api-auth")
+    telemt_stats = telemt_commands.add_parser("collect-stats")
+    telemt_stats.add_argument("--node", default="local")
+    telemt_stats.add_argument("--api-listen", default="127.0.0.1:9091")
+    telemt_stats.add_argument("--api-auth", required=True)
+    telemt_backup = telemt_commands.add_parser("backup")
+    telemt_backup.add_argument("--node", default="local")
+    telemt_backup.add_argument("--config", type=Path, required=True)
+    telemt_backup.add_argument("--output", type=Path, required=True)
 
     hysteria_admin = commands.add_parser("hysteria", help="manage Hysteria 2 per node")
     hysteria_commands = hysteria_admin.add_subparsers(dest="hysteria_command", required=True)
@@ -1741,16 +1787,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = manager.service_many(command_name, args.node, getattr(args, "lines", 100))
             emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
         elif args.command == "telemt":
-            core_name = args.command
-            command_name = getattr(args, f"{core_name}_command")
-            manage_local_service(
-                core_name,
-                "Telemt",
-                command_name,
-                getattr(args, "lines", 100),
-                translator,
-                args.json,
-            )
+            manager = TelemtManager(store)
+            command_name = args.telemt_command
+            if command_name == "build":
+                result = manager.build(args.build_ref, target=args.target, profile=args.profile)
+            elif command_name in {"install", "update"}:
+                result = manager.install_many(args.node, version=args.version,
+                    artifact_id=args.artifact, binary_path=args.binary_path)
+            elif command_name == "version":
+                result = manager.versions(args.node)
+            elif command_name == "check-update":
+                result = manager.check_updates(args.node)
+            elif command_name == "rollback":
+                result = manager.rollback(args.node, binary_path=args.binary_path)
+            elif command_name == "user":
+                user = service.find(args.user)
+                access_key = keys.default_for_user(user["id"], args.access_key)
+                action = "upsert" if args.telemt_user_command == "add" else "delete"
+                result = manager.sync_key(access_key["id"], args.node, action, args.mode)
+            elif command_name == "link":
+                user = service.find(args.user)
+                subscription = SubscriptionService(store).build(user["id"])
+                selected_node = (None if args.node is None else
+                                 ("local" if args.node in {"local", "standalone"} else nodes.find(args.node)["id"]))
+                links = [item for item in subscription["mtproto"]
+                         if selected_node is None or item["node_id"] == selected_node]
+                result = {"user_id": user["id"], "links": links}
+            elif command_name == "diagnostics":
+                result = manager.diagnostics(args.node, listen=args.api_listen,
+                                             auth_header=args.api_auth)
+            elif command_name == "collect-stats":
+                result = manager.collect_usage(args.node, args.api_listen, args.api_auth)
+            elif command_name == "backup":
+                result = manager.backup(args.node, args.config, args.output)
+            else:
+                result = manager.service_many(command_name, args.node, getattr(args, "lines", 100))
+            emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
         elif args.command == "core" and args.core_command == "reality":
             binary = shutil.which("xray")
             if binary is None:
@@ -1860,15 +1932,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 message += "\n" + translator.get("hysteria.ca", path=endpoint["ca_cert"])
             emit({"endpoint": endpoint}, message, args.json)
         elif args.command == "core" and args.core_command == "telemt":
+            target_node = "local" if args.node in {"local", "standalone"} else nodes.find(args.node)["id"]
+            user = service.find(args.user)
+            access_key = keys.default_for_user(user["id"], args.access_key)
+            if target_node != "local":
+                data = store.load()
+                operation = enqueue_node_operation(data, target_node, "telemt_inbound", "configure", {
+                    "access_key_id": access_key["id"], "server": args.server, "port": args.port,
+                    "api_port": args.api_port, "tls_domain": args.tls_domain, "mode": args.mode,
+                    "ad_tag": args.ad_tag, "listener_ips": args.listen_ip,
+                    "ipv4": args.ipv4, "ipv6": args.ipv6, "prefer_ip": args.prefer_ip,
+                    "use_middle_proxy": args.middle_proxy,
+                    "timeouts": {"first_byte": args.first_byte_timeout,
+                                 "handshake": args.handshake_timeout,
+                                 "keepalive": args.keepalive, "ack": args.ack_timeout},
+                    "mask_host": args.mask_host, "mask_port": args.mask_port,
+                    "unknown_sni_action": args.unknown_sni_action,
+                    "api_preferred": True, "atomic_config_fallback": True,
+                    "publish_links_after_ack": True,
+                }, resource_id=access_key["id"])
+                store.save(data)
+                TelemtManager(store).audit_configuration(target_node, access_key["id"], queued=True)
+                emit({"state": "pending_node_execution", "operation": public_operation(operation)},
+                     f"Telemt configuration queued for node {target_node}", args.json)
+                return 0
             binary = shutil.which("telemt")
             if binary is None:
                 raise ValueError("telemt_not_installed")
             config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
             destination = args.config or config_root / "cores" / "telemt" / "telemt.toml"
             data_dir = destination.parent / "runtime" if args.config else Path("/var/lib/xraydo/telemt")
-            user = service.find(args.user)
-            access_key = keys.default_for_user(user["id"], args.access_key)
             runtime_user = user_for_access_key(user, access_key)
+            all_users = {
+                "k_" + item["id"].replace("-", ""): item["credentials"]["telemt_secret"]
+                for item in store.load().get("access_keys", []) if item.get("state") == "active"
+            }
             endpoint = configure_telemt(
                 binary=binary,
                 destination=destination,
@@ -1889,9 +1987,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 handshake_timeout=args.handshake_timeout,
                 keepalive=args.keepalive,
                 ack_timeout=args.ack_timeout,
+                existing_users=all_users, mask_host=args.mask_host, mask_port=args.mask_port,
+                unknown_sni_action=args.unknown_sni_action,
             )
             endpoint["access_key_id"] = access_key["id"]
+            endpoint["node_id"] = target_node
             keys.set_endpoint(access_key["id"], "telemt", endpoint)
+            TelemtManager(store).audit_configuration(target_node, access_key["id"], queued=False)
             message = translator.get("telemt.configured", path=endpoint["config"])
             message += "\n" + translator.get("telemt.tg_uri", uri=endpoint["tg_uri"])
             message += "\n" + translator.get("telemt.https_uri", uri=endpoint["https_uri"])

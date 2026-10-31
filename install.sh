@@ -57,6 +57,16 @@ ROLE=""
 CORES=""
 TLS_MODE="auto"
 ANSWER_FILE=""
+INSTALL_ACTION=""
+FIRST_USER_MODE=""
+FIRST_USER_NAME="default"
+FIRST_USER_LIMITS="recommended"
+FIRST_USER_TRAFFIC="100GB"
+FIRST_USER_DURATION="30d"
+FIRST_USER_IPS="2"
+PUBLIC_HOST=""
+UTLS_PROFILE="firefox"
+HYSTERIA_ECH="off"
 PACKAGE_MANAGER=""
 INIT_SYSTEM="none"
 ARCH=""
@@ -80,6 +90,15 @@ Options:
   --role ROLE           standalone, master, or node
   --cores LIST          Comma list: xray,hysteria,telemt (default: all)
   --answers FILE        Read non-secret KEY=VALUE answers
+  --update              Reinstall the pinned release, preserving config/state
+  --uninstall           Remove programs/services but preserve config and state
+  --purge               Fully remove programs, config, state, keys, and users
+  --first-user MODE     recommended, custom, or skip
+  --user-name NAME      First user name (default: default)
+  --limits PROFILE      recommended, unlimited, or custom
+  --public-host HOST    Public IPv4/IPv6 or DNS name for client links
+  --utls PROFILE        REALITY uTLS profile (default: firefox)
+  --hysteria-ech NAME   Generate ECH keys with this public/decoy name
   --dry-run             Print the complete plan without changing the system
   --non-interactive     Disable prompts (requires --yes to install)
   --yes                 Accept the final installation plan
@@ -113,6 +132,15 @@ load_answers() {
             ROLE) ROLE="$value" ;;
             CORES) CORES="$value" ;;
             TLS_MODE) TLS_MODE="$value" ;;
+            FIRST_USER_MODE) FIRST_USER_MODE="$value" ;;
+            FIRST_USER_NAME) FIRST_USER_NAME="$value" ;;
+            FIRST_USER_LIMITS) FIRST_USER_LIMITS="$value" ;;
+            FIRST_USER_TRAFFIC) FIRST_USER_TRAFFIC="$value" ;;
+            FIRST_USER_DURATION) FIRST_USER_DURATION="$value" ;;
+            FIRST_USER_IPS) FIRST_USER_IPS="$value" ;;
+            PUBLIC_HOST) PUBLIC_HOST="$value" ;;
+            UTLS_PROFILE) UTLS_PROFILE="$value" ;;
+            HYSTERIA_ECH) HYSTERIA_ECH="$value" ;;
             *) fail "unknown answer-file key: $key" ;;
         esac
     done < "$path"
@@ -151,6 +179,33 @@ while (($#)); do
             load_answers "$ANSWER_FILE"
             shift 2
             ;;
+        --update)
+            [[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" == "install" ]] || fail "choose only one installer action"
+            INSTALL_ACTION="install"; shift ;;
+        --uninstall)
+            [[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" == "uninstall" ]] || fail "choose only one removal action"
+            INSTALL_ACTION="uninstall"; shift ;;
+        --purge)
+            [[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" == "purge" ]] || fail "choose only one removal action"
+            INSTALL_ACTION="purge"; shift ;;
+        --first-user)
+            (($# >= 2)) || fail "--first-user requires recommended, custom, or skip"
+            FIRST_USER_MODE="$2"; shift 2 ;;
+        --user-name)
+            (($# >= 2)) || fail "--user-name requires a value"
+            FIRST_USER_NAME="$2"; shift 2 ;;
+        --limits)
+            (($# >= 2)) || fail "--limits requires recommended, unlimited, or custom"
+            FIRST_USER_LIMITS="$2"; shift 2 ;;
+        --public-host)
+            (($# >= 2)) || fail "--public-host requires a value"
+            PUBLIC_HOST="$2"; shift 2 ;;
+        --utls)
+            (($# >= 2)) || fail "--utls requires a profile"
+            UTLS_PROFILE="$2"; shift 2 ;;
+        --hysteria-ech)
+            (($# >= 2)) || fail "--hysteria-ech requires a public name"
+            HYSTERIA_ECH="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --yes) ASSUME_YES=true; shift ;;
@@ -163,11 +218,182 @@ done
 [[ -z "$LANGUAGE" || "$LANGUAGE" == "en" || "$LANGUAGE" == "ru" ]] || \
     fail "unsupported language: $LANGUAGE"
 [[ "$PREFIX" == /* ]] || fail "--prefix must be an absolute path"
+[[ "$PREFIX" != "/" ]] || fail "--prefix cannot be the filesystem root"
+PREFIX="${PREFIX%/}"
 [[ -z "$PROFILE" || "$PROFILE" =~ ^(quick|master|node|advanced)$ ]] || fail "unsupported profile: $PROFILE"
 [[ -z "$ROLE" || "$ROLE" =~ ^(standalone|master|node)$ ]] || fail "unsupported role: $ROLE"
 [[ -z "$CORES" || "$CORES" =~ ^(none|((xray|hysteria|telemt)(,(xray|hysteria|telemt))*))$ ]] || fail "--cores accepts xray,hysteria,telemt or none"
 [[ "$TLS_MODE" =~ ^(auto|domain|public-ip|private-ca)$ ]] || fail "unsupported TLS mode: $TLS_MODE"
+[[ -z "$FIRST_USER_MODE" || "$FIRST_USER_MODE" =~ ^(recommended|custom|skip)$ ]] || fail "unsupported first-user mode: $FIRST_USER_MODE"
+[[ "$FIRST_USER_LIMITS" =~ ^(recommended|unlimited|custom)$ ]] || fail "unsupported limits profile: $FIRST_USER_LIMITS"
+[[ "$FIRST_USER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "first user name must contain 1-64 safe characters"
+if [[ ! "$FIRST_USER_IPS" =~ ^[0-9]+$ ]] || ((FIRST_USER_IPS > 65535)); then
+    fail "FIRST_USER_IPS must be 0..65535"
+fi
+[[ "$UTLS_PROFILE" =~ ^(firefox|chrome|safari|ios|android|edge|360|qq|random|randomized|randomizednoalpn)$ ]] || fail "unsupported uTLS profile: $UTLS_PROFILE"
+[[ "$HYSTERIA_ECH" == "off" || "$HYSTERIA_ECH" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "invalid Hysteria ECH public name"
+[[ -z "$PUBLIC_HOST" || "$PUBLIC_HOST" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || fail "invalid public host"
+[[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" =~ ^(install|uninstall|purge)$ ]] || fail "invalid installer action"
 [[ "$(uname -s)" == "Linux" ]] || fail "only Linux is supported"
+
+if [[ -z "$LANGUAGE" ]]; then
+    if [[ "${XRAYDO_LANG:-}" == "en" || "${XRAYDO_LANG:-}" == "ru" ]]; then
+        LANGUAGE="$XRAYDO_LANG"
+    elif [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
+        LANGUAGE="en"
+    else
+        printf '%s\n' \
+            'Select language / Выберите язык:' '' \
+            '  1) English (default)' \
+            '  2) Русский' ''
+        read -r -p 'Choice / Выбор [1]: ' language_choice
+        [[ "$language_choice" == "2" ]] && LANGUAGE="ru" || LANGUAGE="en"
+    fi
+fi
+
+root_exec() {
+    if ((EUID == 0)); then
+        "$@"
+    else
+        command -v sudo >/dev/null 2>&1 || fail "root privileges are required; run as root or install sudo"
+        sudo "$@"
+    fi
+}
+
+remove_exec() {
+    case "$PREFIX" in
+        /usr|/usr/*|/opt|/opt/*) root_exec "$@" ;;
+        *) "$@" ;;
+    esac
+}
+
+safe_remove_tree() {
+    local target="$1"
+    case "$target" in
+        ""|/|/usr|/usr/local|/opt|/var|/var/lib|/var/log) fail "refusing unsafe removal target: $target" ;;
+        */xraydo|*/xraydo/*) remove_exec rm -rf -- "$target" ;;
+        *) fail "refusing unexpected removal target: $target" ;;
+    esac
+}
+
+remove_service_units() {
+    local service
+    local services=(xraydo-xray xraydo-hysteria xraydo-telemt xraydo-tls-renew xraydo-subscription)
+    [[ "$PREFIX" == "/usr/local" ]] || return 0
+    if command -v systemctl >/dev/null 2>&1; then
+        for service in "${services[@]}"; do
+            root_exec systemctl disable --now "$service.service" >/dev/null 2>&1 || true
+        done
+    fi
+    if command -v rc-service >/dev/null 2>&1; then
+        for service in "${services[@]}"; do
+            root_exec rc-service "$service" stop >/dev/null 2>&1 || true
+            root_exec rc-update del "$service" default >/dev/null 2>&1 || true
+        done
+    fi
+    for service in "${services[@]}"; do
+        root_exec rm -f -- "/etc/systemd/system/$service.service" \
+            "/etc/systemd/system/multi-user.target.wants/$service.service" \
+            "/etc/init.d/$service"
+    done
+    if command -v systemctl >/dev/null 2>&1; then
+        root_exec systemctl daemon-reload >/dev/null 2>&1 || true
+        root_exec systemctl reset-failed >/dev/null 2>&1 || true
+    fi
+}
+
+remove_system_users() {
+    local account
+    [[ "$PREFIX" == "/usr/local" ]] || return 0
+    for account in xraydo-xray xraydo-hysteria xraydo-telemt; do
+        id -u "$account" >/dev/null 2>&1 || continue
+        if command -v userdel >/dev/null 2>&1; then
+            root_exec userdel "$account"
+        elif command -v deluser >/dev/null 2>&1; then
+            root_exec deluser "$account"
+        else
+            printf 'Warning: cannot remove system account %s (userdel/deluser unavailable).\n' "$account" >&2
+        fi
+    done
+}
+
+remove_xraydo() {
+    local action="$1"
+    local data_dir="$PREFIX/var/lib/xraydo"
+    [[ "$PREFIX" == "/usr/local" ]] && data_dir="/var/lib/xraydo"
+    local confirmation expected
+    local purge=false
+    [[ "$action" == "purge" ]] && purge=true
+
+    printf '\nRemoval plan / План удаления:\n'
+    printf '  action / действие: %s\n  prefix: %s\n' "$action" "$PREFIX"
+    printf '  programs: %s/bin/{xraydo,xray,hysteria,telemt}, %s/lib/xraydo\n' "$PREFIX" "$PREFIX"
+    printf '  services: xraydo-*\n'
+    printf '  system packages / системные пакеты: preserved (they may be shared)\n'
+    if [[ "$purge" == true ]]; then
+        printf '  PERMANENTLY DELETE / УДАЛИТЬ БЕЗВОЗВРАТНО:\n'
+        printf '    config: %s/etc/xraydo\n    state, users, TLS/private keys: %s\n' "$PREFIX" "$data_dir"
+        [[ "$PREFIX" == "/usr/local" ]] && printf '    logs: /var/log/xraydo; system users: xraydo-*\n'
+        expected="PURGE xraydo"
+    else
+        printf '  preserve / сохранить: %s/etc/xraydo and %s\n' "$PREFIX" "$data_dir"
+        expected="UNINSTALL xraydo"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        printf '{"action":"%s","dry_run":true,"prefix":"%s","state":"%s"}\n' "$action" "$PREFIX" "$data_dir"
+        return 0
+    fi
+    if [[ "$ASSUME_YES" != true ]]; then
+        [[ "$NON_INTERACTIVE" != true && -t 0 ]] || fail "use --yes with --$action in non-interactive mode"
+        read -r -p "Type '$expected' to continue / Введите '$expected': " confirmation
+        [[ "$confirmation" == "$expected" ]] || fail "removal confirmation did not match"
+    fi
+
+    remove_service_units
+    remove_exec rm -f -- "$PREFIX/bin/xraydo" "$PREFIX/bin/xray" "$PREFIX/bin/hysteria" "$PREFIX/bin/telemt"
+    safe_remove_tree "$PREFIX/lib/xraydo"
+    safe_remove_tree "$PREFIX/share/doc/xraydo"
+    if [[ "$purge" == true ]]; then
+        safe_remove_tree "$PREFIX/etc/xraydo"
+        safe_remove_tree "$data_dir"
+        if [[ "$PREFIX" == "/usr/local" ]]; then
+            safe_remove_tree "/var/log/xraydo"
+        fi
+        remove_system_users
+        printf 'xraydo fully purged; configuration, state, credentials and cryptographic keys were removed.\n'
+        printf 'Physical secure-erasure guarantees depend on the storage/filesystem.\n'
+    else
+        printf 'xraydo uninstalled; configuration and state were preserved.\n'
+        printf 'Run this script with --purge to remove preserved credentials and keys.\n'
+    fi
+}
+
+if [[ -z "$INSTALL_ACTION" ]]; then
+    if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
+        INSTALL_ACTION="install"
+    else
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            printf '\nДействие:\n  1) Установить или обновить (рекомендуется)\n  2) Удалить программу, сохранив конфигурацию и данные\n  3) Полное удаление (purge): данные, пользователи, credentials и ключи\n  q) Отмена\n'
+            read -r -p 'Выбор [1]: ' action_choice
+        else
+            printf '\nAction:\n  1) Install or update (recommended)\n  2) Uninstall programs and preserve configuration/state\n  3) Full purge: data, users, credentials, and keys\n  q) Cancel\n'
+            read -r -p 'Choice [1]: ' action_choice
+        fi
+        case "${action_choice:-1}" in
+            1) INSTALL_ACTION="install" ;;
+            2) INSTALL_ACTION="uninstall" ;;
+            3) INSTALL_ACTION="purge" ;;
+            q|Q) printf 'Cancelled / Отменено.\n'; exit 0 ;;
+            *) fail "invalid action choice" ;;
+        esac
+    fi
+fi
+
+if [[ "$INSTALL_ACTION" == "uninstall" || "$INSTALL_ACTION" == "purge" ]]; then
+    remove_xraydo "$INSTALL_ACTION"
+    exit 0
+fi
 
 case "$(uname -m)" in
     x86_64|amd64) ARCH="amd64" ;;
@@ -193,21 +419,6 @@ for candidate in apt-get dnf yum zypper apk; do
     fi
 done
 [[ -n "$PACKAGE_MANAGER" ]] || fail "supported package manager not found (apt, dnf, yum, zypper, apk)"
-
-if [[ -z "$LANGUAGE" ]]; then
-    if [[ "${XRAYDO_LANG:-}" == "en" || "${XRAYDO_LANG:-}" == "ru" ]]; then
-        LANGUAGE="$XRAYDO_LANG"
-    elif [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
-        LANGUAGE="en"
-    else
-        printf '%s\n' \
-            'Select language / Выберите язык:' '' \
-            '  1) English (default)' \
-            '  2) Русский' ''
-        read -r -p 'Choice / Выбор [1]: ' language_choice
-        [[ "$language_choice" == "2" ]] && LANGUAGE="ru" || LANGUAGE="en"
-    fi
-fi
 
 if [[ -z "$PROFILE" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
     while true; do
@@ -306,6 +517,82 @@ if [[ "$PROFILE" == "advanced" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
         *) fail "invalid TLS choice" ;;
     esac
 fi
+
+if [[ -z "$FIRST_USER_MODE" ]]; then
+    if [[ "$ROLE" == "node" ]]; then
+        FIRST_USER_MODE="skip"
+    elif [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
+        FIRST_USER_MODE="recommended"
+    else
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            printf '\n%s\n' \
+                'Создать первого пользователя?' \
+                '  1) Да, рекомендуемый профиль (default, 30 дней, 100 GB, 2 IP)' \
+                '  2) Да, настроить имя, лимиты и стартовые протоколы' \
+                '  3) Нет, создать позже через xraydo'
+            read -r -p 'Выбор [1]: ' first_user_choice
+        else
+            printf '\n%s\n' \
+                'Create the first user?' \
+                '  1) Yes, recommended profile (default, 30 days, 100 GB, 2 IPs)' \
+                '  2) Yes, configure name, limits, and initial protocols' \
+                '  3) No, create later with xraydo'
+            read -r -p 'Choice [1]: ' first_user_choice
+        fi
+        case "${first_user_choice:-1}" in
+            1) FIRST_USER_MODE="recommended" ;;
+            2) FIRST_USER_MODE="custom" ;;
+            3) FIRST_USER_MODE="skip" ;;
+            *) fail "invalid first-user choice" ;;
+        esac
+    fi
+fi
+
+if [[ "$FIRST_USER_MODE" == "custom" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+    read -r -p "First user name / Имя первого пользователя [default]: " custom_user_name
+    FIRST_USER_NAME="${custom_user_name:-default}"
+    [[ "$FIRST_USER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "invalid first user name"
+    printf '%s\n' \
+        'Limits / Лимиты:' \
+        '  1) Recommended: 30d, 100GB, 1 device, 2 IPs' \
+        '  2) Unlimited' \
+        '  3) Custom traffic, duration and IP count'
+    read -r -p 'Choice / Выбор [1]: ' limits_choice
+    case "${limits_choice:-1}" in
+        1) FIRST_USER_LIMITS="recommended" ;;
+        2) FIRST_USER_LIMITS="unlimited" ;;
+        3)
+            FIRST_USER_LIMITS="custom"
+            read -r -p 'Traffic / Трафик [100GB]: ' custom_traffic
+            read -r -p 'Duration / Срок [30d]: ' custom_duration
+            read -r -p 'IP limit / Лимит IP [2]: ' custom_ips
+            FIRST_USER_TRAFFIC="${custom_traffic:-100GB}"
+            FIRST_USER_DURATION="${custom_duration:-30d}"
+            FIRST_USER_IPS="${custom_ips:-2}"
+            ;;
+        *) fail "invalid limits choice" ;;
+    esac
+    if [[ ",$CORES," == *,xray,* ]]; then
+        printf '%s\n' \
+            'REALITY uTLS fixed profiles: firefox (recommended), chrome, safari, ios, android, edge, 360, qq' \
+            'Randomizers: random selects a browser profile; randomized creates a randomized ClientHello with ALPN;' \
+            'randomizednoalpn removes ALPN and may be incompatible with the selected target/client.'
+        read -r -p 'uTLS [firefox]: ' custom_utls
+        UTLS_PROFILE="${custom_utls:-firefox}"
+    fi
+    if [[ ",$CORES," == *,hysteria,* ]]; then
+        read -r -p 'ECH public/decoy name (blank = disabled; enable only for supporting clients; useful mainly without obfs): ' custom_ech
+        HYSTERIA_ECH="${custom_ech:-off}"
+    fi
+fi
+
+[[ "$FIRST_USER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "invalid first user name"
+[[ "$FIRST_USER_TRAFFIC" =~ ^[1-9][0-9]*(B|KB|MB|GB|TB)$ ]] || fail "invalid first-user traffic limit"
+[[ "$FIRST_USER_DURATION" =~ ^[1-9][0-9]*(s|m|h|d|w)$ ]] || fail "invalid first-user duration"
+if [[ ! "$FIRST_USER_IPS" =~ ^[0-9]+$ ]] || ((FIRST_USER_IPS > 65535)); then
+    fail "invalid first-user IP limit"
+fi
+[[ "$UTLS_PROFILE" =~ ^(firefox|chrome|safari|ios|android|edge|360|qq|random|randomized|randomizednoalpn)$ ]] || fail "invalid uTLS profile"
 
 if [[ "$LANGUAGE" == "ru" ]]; then
     PLAN_TITLE="План быстрой установки"
@@ -436,9 +723,28 @@ next_free_port() {
     printf '%s' "$candidate"
 }
 
+port_owner() {
+    local port="$1"
+    local owner=""
+    if command -v ss >/dev/null 2>&1; then
+        owner="$(ss -H -ltnp "sport = :$port" 2>/dev/null | head -n 1 || true)"
+    elif command -v lsof >/dev/null 2>&1; then
+        owner="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1 " pid=" $2}' || true)"
+    fi
+    owner="${owner//$'\n'/ }"
+    printf '%s' "${owner:-unknown process}"
+}
+
+tcp_443_conflict=""
+if port_in_use tcp 443; then
+    tcp_443_conflict="$(port_owner 443)"
+fi
 xray_port="$(next_free_port tcp 443)"
 hysteria_port="$(next_free_port udp 1935)"
 telemt_port="$(next_free_port tcp 8443)"
+subscription_port="$(next_free_port tcp 8444)"
+hysteria_stats_port="$(next_free_port tcp 9999)"
+telemt_api_port="$(next_free_port tcp 9091)"
 
 printf '\n%s:\n' "$PLAN_TITLE"
 printf '  %s: %s %s / %s / %s\n' "$PLATFORM_LABEL" "$OS_ID" "$OS_VERSION" "$ARCH" "$PACKAGE_MANAGER"
@@ -451,17 +757,37 @@ printf '  %s: %s\n' "$PREFIX_LABEL" "$PREFIX"
 printf '  %s: %s\n' "$CORES_LABEL" "$CORES"
 printf '  TLS: %s\n' "$TLS_MODE"
 printf '  Init: %s\n' "$INIT_SYSTEM"
+if [[ "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
+    printf '  Core autostart / Автозапуск ядер: enabled (%s)\n' "$INIT_SYSTEM"
+fi
 printf '  Security / Защита: %s (unchanged)\n' "$security_modules"
 printf '  RAM available / Доступно RAM: %s MB\n' "$memory_mb"
 printf '  Disk available / Доступно диска: %s MB\n' "$disk_available_mb"
 [[ ",$CORES," == *,xray,* ]] && printf '  Xray REALITY: TCP %s\n' "$xray_port"
+if [[ -n "$tcp_443_conflict" ]]; then
+    printf '    TCP 443 occupied / занят: %s; selected / выбран: TCP %s\n' "$tcp_443_conflict" "$xray_port"
+fi
 [[ ",$CORES," == *,hysteria,* ]] && printf '  Hysteria 2: UDP %s\n' "$hysteria_port"
 [[ ",$CORES," == *,telemt,* ]] && printf '  Telemt: TCP %s\n' "$telemt_port"
+if [[ "$FIRST_USER_MODE" != "skip" ]]; then
+    printf '  First user / Первый пользователь: %s (%s)\n' "$FIRST_USER_NAME" "$FIRST_USER_MODE"
+    if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
+        printf '    Limits / Лимиты: unlimited; devices: 1\n'
+    else
+        printf '    Limits / Лимиты: duration=%s, traffic=%s, devices=1, IP=%s\n' \
+            "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+    fi
+    [[ ",$CORES," == *,xray,* ]] && printf '    REALITY uTLS: %s\n' "$UTLS_PROFILE"
+    [[ ",$CORES," == *,hysteria,* ]] && printf '    Hysteria ECH: %s\n' "$HYSTERIA_ECH"
+    printf '    HTTPS subscription: TCP %s (credentials generated after health-check)\n' "$subscription_port"
+else
+    printf '  First user / Первый пользователь: skipped (no credentials/subscription)\n'
+fi
 printf '  Firewall / Файрвол: unchanged / без изменений\n'
 
 if [[ "$DRY_RUN" == true ]]; then
-    printf '{"action":"install","arch":"%s","cores":"%s","dry_run":true,"language":"%s","os":"%s","package_manager":"%s","profile":"%s","ref":"%s","role":"%s"}\n' \
-        "$ARCH" "$CORES" "$LANGUAGE" "$OS_ID" "$PACKAGE_MANAGER" "$PROFILE" "$XRAYDO_REF" "$ROLE"
+    printf '{"action":"install","arch":"%s","cores":"%s","dry_run":true,"first_user":"%s","language":"%s","limits":"%s","os":"%s","package_manager":"%s","profile":"%s","ref":"%s","role":"%s"}\n' \
+        "$ARCH" "$CORES" "$FIRST_USER_MODE" "$LANGUAGE" "$FIRST_USER_LIMITS" "$OS_ID" "$PACKAGE_MANAGER" "$PROFILE" "$XRAYDO_REF" "$ROLE"
     exit 0
 fi
 
@@ -473,15 +799,6 @@ if [[ "$ASSUME_YES" != true ]]; then
         exit 0
     fi
 fi
-
-root_exec() {
-    if ((EUID == 0)); then
-        "$@"
-    else
-        command -v sudo >/dev/null 2>&1 || fail "root privileges are required; run as root or install sudo"
-        sudo "$@"
-    fi
-}
 
 packages_apt() {
     root_exec apt-get update
@@ -580,6 +897,11 @@ readonly CONFIG_DIR="$PREFIX/etc/xraydo"
 readonly CONFIG_PATH="$CONFIG_DIR/config.json"
 readonly CORE_DIR="$PREFIX/lib/xraydo/cores"
 readonly DOCUMENTATION_DIR="$PREFIX/share/doc/xraydo"
+if [[ "$PREFIX" == "/usr/local" ]]; then
+    readonly DATA_DIR="/var/lib/xraydo"
+else
+    readonly DATA_DIR="$PREFIX/var/lib/xraydo"
+fi
 
 printf '%s\n' "$INSTALL_TEXT"
 install_exec install -d -m 0755 "$LIBRARY_DIR/xraydo/locales" "$LIBRARY_DIR/xraydo/data" "$PREFIX/bin" "$CONFIG_DIR" "$DOCUMENTATION_DIR"
@@ -591,10 +913,11 @@ fi
 install_exec install -m 0644 "$SOURCE_DIR/LICENSE" "$SOURCE_DIR/THIRD_PARTY_NOTICES.md" "$DOCUMENTATION_DIR/"
 
 wrapper_path="$TEMP_DIR/xraydo-wrapper"
-printf '#!/usr/bin/env bash\nXRAYDO_CONFIG=%q PYTHONPATH=%q exec python3 -m xraydo.cli "$@"\n' \
-    "$CONFIG_PATH" "$LIBRARY_DIR" > "$wrapper_path"
+printf '#!/usr/bin/env bash\nXRAYDO_CONFIG=%q XRAYDO_DATA_DIR=%q PYTHONPATH=%q exec python3 -m xraydo.cli "$@"\n' \
+    "$CONFIG_PATH" "$DATA_DIR" "$LIBRARY_DIR" > "$wrapper_path"
 chmod 0755 "$wrapper_path"
 install_exec install -m 0755 "$wrapper_path" "$BINARY_PATH"
+install_exec install -d -m 0700 "$DATA_DIR"
 
 if [[ ! -e "$CONFIG_PATH" ]]; then
     config_path="$TEMP_DIR/config.json"
@@ -768,6 +1091,16 @@ provision_core_service() {
     esac
 }
 
+enable_core_autostart() {
+    local core="$1"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        root_exec systemctl enable "xraydo-$core.service" >/dev/null
+        root_exec systemctl is-enabled --quiet "xraydo-$core.service"
+    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        root_exec rc-update add "xraydo-$core" default >/dev/null
+    fi
+}
+
 provision_tls_renewer() {
     root_exec install -d -m 0700 /var/lib/xraydo
     root_exec install -d -m 0750 /var/log/xraydo/tls-renew
@@ -821,8 +1154,99 @@ EOF
     fi
 }
 
+provision_subscription_service() {
+    local cert="$DATA_DIR/tls/leaf/current/server.crt"
+    local key="$DATA_DIR/tls/leaf/current/server.key"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        local unit="$TEMP_DIR/xraydo-subscription.service"
+        cat > "$unit" <<EOF
+[Unit]
+Description=xraydo HTTPS subscription service
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$cert
+
+[Service]
+Type=simple
+ExecStart=$BINARY_PATH subscription serve --https-only --listen 0.0.0.0 --port $subscription_port --public-host $PUBLIC_HOST --cert $cert --key $key
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadOnlyPaths=$DATA_DIR/tls
+ReadWritePaths=$DATA_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        root_exec install -m 0644 "$unit" /etc/systemd/system/xraydo-subscription.service
+    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        local service="$TEMP_DIR/xraydo-subscription"
+        cat > "$service" <<EOF
+#!/sbin/openrc-run
+name="xraydo HTTPS subscription service"
+command="$BINARY_PATH"
+command_args="subscription serve --https-only --listen 0.0.0.0 --port $subscription_port --public-host $PUBLIC_HOST --cert $cert --key $key"
+directory="$DATA_DIR"
+command_background=true
+pidfile="/run/xraydo-subscription.pid"
+
+depend() {
+    need net
+}
+EOF
+        root_exec install -m 0755 "$service" /etc/init.d/xraydo-subscription
+    fi
+}
+
+start_core_service() {
+    local core="$1"
+    [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]] || return 0
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        root_exec systemctl restart "xraydo-$core.service" >/dev/null
+        root_exec systemctl is-active --quiet "xraydo-$core.service"
+    else
+        if root_exec rc-service "xraydo-$core" status >/dev/null 2>&1; then
+            root_exec rc-service "xraydo-$core" restart >/dev/null
+        else
+            root_exec rc-service "xraydo-$core" start >/dev/null
+        fi
+        root_exec rc-service "xraydo-$core" status >/dev/null
+    fi
+}
+
+detect_public_host() {
+    [[ -n "$PUBLIC_HOST" ]] && return 0
+    PUBLIC_HOST="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+    if [[ -z "$PUBLIC_HOST" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+        read -r -p 'Public DNS name or IP / Публичный DNS или IP: ' PUBLIC_HOST
+    fi
+    [[ -n "$PUBLIC_HOST" ]] || fail "cannot detect public address; use --public-host"
+    [[ "$PUBLIC_HOST" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || fail "invalid public host"
+}
+
+quiet_root() {
+    local label="$1"
+    shift
+    local diagnostics="$TEMP_DIR/diagnostics.log"
+    if ! root_exec "$@" >>"$diagnostics" 2>&1; then
+        printf 'Warning: %s failed; details: %s\n' "$label" "$diagnostics" >&2
+        return 1
+    fi
+}
+
+# Installation health must pass before any first-user secret is generated.
 XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" --json status >/dev/null
 XRAYDO_DATA_DIR="$TEMP_DIR/xraydo-smoke" "$BINARY_PATH" tls renew-daemon --once >/dev/null
+[[ ",$CORES," == *,xray,* ]] && quiet_root "Xray version health-check" "$PREFIX/bin/xray" version
+[[ ",$CORES," == *,hysteria,* ]] && quiet_root "Hysteria version health-check" "$PREFIX/bin/hysteria" version
+[[ ",$CORES," == *,telemt,* ]] && quiet_root "Telemt version health-check" "$PREFIX/bin/telemt" --version
 
 if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     [[ ",$CORES," == *,xray,* ]] && provision_core_service xray "$PREFIX/bin/xray" "run -config $CONFIG_DIR/cores/xray/config.json" config.json
@@ -831,31 +1255,181 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     provision_tls_renewer
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         root_exec systemctl daemon-reload
-        root_exec systemctl enable --now xraydo-tls-renew.service
+        [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
+        [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
+        [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
+        root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
     else
-        root_exec rc-update add xraydo-tls-renew default
-        root_exec rc-service xraydo-tls-renew start
+        [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
+        [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
+        [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
+        root_exec rc-update add xraydo-tls-renew default >/dev/null
+        root_exec rc-service xraydo-tls-renew start >/dev/null
+    fi
+fi
+
+first_user_created=false
+subscription_token=""
+xray_state="not selected"
+hysteria_state="not selected"
+telemt_state="not selected"
+
+if [[ "$FIRST_USER_MODE" != "skip" ]]; then
+    detect_public_host
+    url_host="$PUBLIC_HOST"
+    [[ "$url_host" == *:* && "$url_host" != \[*\] ]] && url_host="[$url_host]"
+    subscription_base="https://$url_host:$subscription_port"
+
+    quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
+    if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        quiet_root "server IP certificate" "$BINARY_PATH" --json tls issue-self --ip "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
+    else
+        quiet_root "server DNS certificate" "$BINARY_PATH" --json tls issue-self --domain "$PUBLIC_HOST" || fail "TLS certificate issuance failed"
+    fi
+    quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
+
+    users_json="$TEMP_DIR/users.json"
+    root_exec "$BINARY_PATH" --json user list >"$users_json"
+    chmod 0600 "$users_json"
+    if grep -Fq "\"name\": \"$FIRST_USER_NAME\"" "$users_json"; then
+        printf '  first user: existing user %s preserved; token was not rotated\n' "$FIRST_USER_NAME"
+    else
+        user_json="$TEMP_DIR/first-user.json"
+        (umask 077; root_exec "$BINARY_PATH" --json user create "$FIRST_USER_NAME" >"$user_json")
+        subscription_token="$(sed -n 's/.*"subscription_token": "\([^"]*\)".*/\1/p' "$user_json")"
+        [[ -n "$subscription_token" ]] || fail "first user was created but its one-time token could not be captured"
+        first_user_created=true
+    fi
+
+    keys_json="$TEMP_DIR/access-keys.json"
+    root_exec "$BINARY_PATH" --json key list --user "$FIRST_USER_NAME" >"$keys_json"
+    chmod 0600 "$keys_json"
+    access_key_id="$(sed -n 's/.*"id": "\([^"]*\)".*/\1/p' "$keys_json" | head -n 1)"
+    [[ -n "$access_key_id" ]] || fail "default access key not found"
+    if [[ "$FIRST_USER_LIMITS" != "unlimited" ]]; then
+        quiet_root "first-user limits" "$BINARY_PATH" --json key set-limit "$access_key_id" \
+            --traffic "$FIRST_USER_TRAFFIC" --duration "$FIRST_USER_DURATION" \
+            --starts immediate --ips "$FIRST_USER_IPS" || fail "cannot apply first-user limits"
+    fi
+
+    if [[ ",$CORES," == *,xray,* ]]; then
+        if quiet_root "Xray REALITY validation" "$BINARY_PATH" --json core reality \
+            --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --listen-port "$xray_port" \
+            --fingerprint "$UTLS_PROFILE" --config "$CONFIG_DIR/cores/xray/config.json"; then
+            if start_core_service xray; then xray_state="configured and healthy"; else xray_state="configured; service health failed"; fi
+        else
+            xray_state="failed; endpoint not published"
+        fi
+    fi
+
+    if [[ ",$CORES," == *,hysteria,* ]]; then
+        hysteria_cert="$CONFIG_DIR/cores/hysteria/pki/server.crt"
+        hysteria_key="$CONFIG_DIR/cores/hysteria/pki/server.key"
+        root_exec install -d -m 0750 "$CONFIG_DIR/cores/hysteria/pki"
+        if id -u xraydo-hysteria >/dev/null 2>&1; then
+            root_exec chown root:xraydo-hysteria "$CONFIG_DIR/cores/hysteria/pki"
+            root_exec install -m 0644 -o root -g xraydo-hysteria "$DATA_DIR/tls/leaf/current/server.crt" "$hysteria_cert"
+            root_exec install -m 0640 -o root -g xraydo-hysteria "$DATA_DIR/tls/leaf/current/server.key" "$hysteria_key"
+        else
+            root_exec install -m 0644 "$DATA_DIR/tls/leaf/current/server.crt" "$hysteria_cert"
+            root_exec install -m 0600 "$DATA_DIR/tls/leaf/current/server.key" "$hysteria_key"
+        fi
+        ech_args=()
+        if [[ "$HYSTERIA_ECH" != "off" ]]; then
+            ech_path="$CONFIG_DIR/cores/hysteria/ech.pem"
+            if quiet_root "Hysteria ECH capability" "$PREFIX/bin/hysteria" ech --help && \
+                quiet_root "Hysteria ECH generation" "$PREFIX/bin/hysteria" ech --public-name "$HYSTERIA_ECH" --output "$ech_path"; then
+                if id -u xraydo-hysteria >/dev/null 2>&1; then
+                    root_exec chown root:xraydo-hysteria "$ech_path"
+                    root_exec chmod 0640 "$ech_path"
+                else
+                    root_exec chmod 0600 "$ech_path"
+                fi
+                # shellcheck disable=SC2016
+                ech_config="$(root_exec awk '/BEGIN ECH CONFIGS/{copy=1;next}/END ECH CONFIGS/{copy=0}copy{printf "%s",$0}' "$ech_path")"
+                [[ -n "$ech_config" ]] && ech_args=(--ech-key "$ech_path" --ech-config "$ech_config")
+            else
+                printf 'Warning: built-in Hysteria ECH is unavailable; ECH was not enabled.\n' >&2
+            fi
+        fi
+        if quiet_root "Hysteria configuration validation" "$BINARY_PATH" --json core hysteria \
+            --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$hysteria_port" \
+            --stats-port "$hysteria_stats_port" --cert "$hysteria_cert" --key "$hysteria_key" \
+            --config "$CONFIG_DIR/cores/hysteria/config.yaml" "${ech_args[@]}"; then
+            if start_core_service hysteria; then hysteria_state="configured and healthy"; else hysteria_state="configured; service health failed"; fi
+        else
+            hysteria_state="failed; endpoint not published"
+        fi
+    fi
+
+    if [[ ",$CORES," == *,telemt,* ]]; then
+        if quiet_root "Telemt configuration validation" "$BINARY_PATH" --json core telemt \
+            --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$telemt_port" \
+            --api-port "$telemt_api_port" --config "$CONFIG_DIR/cores/telemt/telemt.toml"; then
+            if start_core_service telemt; then telemt_state="configured and healthy"; else telemt_state="configured; service health failed"; fi
+        else
+            telemt_state="failed; endpoint not published"
+        fi
+    fi
+
+    if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
+        provision_subscription_service
+        if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+            root_exec systemctl daemon-reload
+            root_exec systemctl enable --now xraydo-subscription.service >/dev/null
+            root_exec systemctl is-active --quiet xraydo-subscription.service || fail "subscription service health-check failed"
+        else
+            root_exec rc-update add xraydo-subscription default >/dev/null
+            root_exec rc-service xraydo-subscription restart >/dev/null
+            root_exec rc-service xraydo-subscription status >/dev/null || fail "subscription service health-check failed"
+        fi
+    fi
+
+    if [[ "$first_user_created" == true ]]; then
+        token_file="$TEMP_DIR/subscription-token"
+        (umask 077; printf '%s' "$subscription_token" >"$token_file")
+        subscription_url="$subscription_base/sub/$subscription_token"
+        telemt_json="$TEMP_DIR/telemt-links.json"
+        root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
+        chmod 0600 "$telemt_json"
+        mtproto_link="$(sed -n 's/.*"uri": "\(tg:\/\/proxy?[^"]*\)".*/\1/p' "$telemt_json" | head -n 1)"
+        if [[ -w /dev/tty ]]; then
+            {
+                printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
+                printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
+                printf '\nSubscription QR:\n'
+            } >/dev/tty
+            root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
+            if [[ -n "$mtproto_link" ]]; then
+                printf '%s' "$mtproto_link" | qrencode -t ANSIUTF8 -o - >/dev/tty
+            fi
+        else
+            credentials_file="$DATA_DIR/bootstrap-$FIRST_USER_NAME.txt"
+            credentials_tmp="$TEMP_DIR/bootstrap.txt"
+            (umask 077; {
+                printf 'HTTPS subscription: %s\n' "$subscription_url"
+                printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
+                [[ -z "$mtproto_link" ]] || printf 'MTProto: %s\n' "$mtproto_link"
+            } >"$credentials_tmp")
+            root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
+            printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
+        fi
     fi
 fi
 
 printf '\n%s\n' "$DONE_TEXT"
 printf '  xraydo: %s\n' "$BINARY_PATH"
 printf '  config: %s\n' "$CONFIG_PATH"
-printf '  command: xraydo\n\n'
-
+printf '  state: %s\n' "$DATA_DIR"
+printf '  Xray: %s\n  Hysteria 2: %s\n  Telemt: %s\n' "$xray_state" "$hysteria_state" "$telemt_state"
 if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
-    printf '  services: installed but disabled until valid configs exist\n'
-    printf '  service configs: %s/cores\n' "$CONFIG_DIR"
+    printf '  core autostart: enabled via %s; services resume after reboot\n' "$INIT_SYSTEM"
 fi
-
-[[ -x "$PREFIX/bin/xray" ]] && "$PREFIX/bin/xray" version
-[[ -x "$PREFIX/bin/hysteria" ]] && "$PREFIX/bin/hysteria" version
-[[ -x "$PREFIX/bin/telemt" ]] && "$PREFIX/bin/telemt" --version
-
-if [[ -x "$BINARY_PATH" ]]; then
-    XRAYDO_DATA_DIR="${TMPDIR:-/tmp}/xraydo-install-check" "$BINARY_PATH" --json status
+if [[ "$FIRST_USER_MODE" == "skip" ]]; then
+    printf '  first user: skipped; no credentials or subscription were created\n'
+else
+    printf '  first user: %s; limits=%s, duration=%s, traffic=%s, devices=1, IP=%s\n' \
+        "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
 fi
-
-if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 ]]; then
-    exec "$BINARY_PATH"
-fi
+printf '  command: sudo xraydo\n'

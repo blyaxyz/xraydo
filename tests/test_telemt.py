@@ -134,6 +134,20 @@ class TelemtTests(unittest.TestCase):
         self.assertIn('ip = "::1"', config)
         self.assertIn("client_keepalive = 20", config)
 
+    def test_multiple_users_and_safe_mask_target_are_written(self) -> None:
+        config = build_config(
+            port=443, api_port=9091, api_secret="control-secret",
+            tls_domain="front.example", username="k_current", user_secret="01" * 16,
+            public_host="proxy.example", data_dir=Path("/var/lib/telemt"),
+            users={"k_existing": "02" * 16}, mask_host="127.0.0.1", mask_port=8443,
+            unknown_sni_action="mask",
+        )
+        self.assertIn('"k_current" = "' + "01" * 16 + '"', config)
+        self.assertIn('"k_existing" = "' + "02" * 16 + '"', config)
+        self.assertIn('mask_host = "127.0.0.1"', config)
+        self.assertIn("mask_port = 8443", config)
+        self.assertIn('unknown_sni_action = "mask"', config)
+
     def test_network_options_reject_inconsistent_or_unsafe_values(self) -> None:
         common = {
             "binary": "telemt",

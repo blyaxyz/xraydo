@@ -33,11 +33,81 @@ output="$("$ROOT_DIR/install.sh" --answers "$answers" --dry-run --non-interactiv
 [[ "$output" == *'"cores":"xray"'* ]]
 [[ "$output" == *'Xray REALITY: TCP'* ]]
 [[ "$output" != *'Hysteria 2: UDP'* ]]
+[[ "$output" == *'Первый пользователь: skipped'* ]]
+[[ "$output" == *'"first_user":"skip"'* ]]
+
+first_user_answers="$TEMP_DIR/first-user-answers"
+printf '%s\n' \
+    'LANGUAGE=en' \
+    "PREFIX=$TEMP_DIR/prefix" \
+    'PROFILE=quick' \
+    'ROLE=standalone' \
+    'CORES=xray,hysteria,telemt' \
+    'FIRST_USER_MODE=custom' \
+    'FIRST_USER_NAME=alice' \
+    'FIRST_USER_LIMITS=custom' \
+    'FIRST_USER_TRAFFIC=250GB' \
+    'FIRST_USER_DURATION=60d' \
+    'FIRST_USER_IPS=3' \
+    'PUBLIC_HOST=203.0.113.10' \
+    'UTLS_PROFILE=randomizednoalpn' \
+    'HYSTERIA_ECH=decoy.example.com' > "$first_user_answers"
+
+first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dry-run --non-interactive)"
+[[ "$first_user_output" == *'First user / Первый пользователь: alice (custom)'* ]]
+[[ "$first_user_output" == *'duration=60d, traffic=250GB, devices=1, IP=3'* ]]
+[[ "$first_user_output" == *'REALITY uTLS: randomizednoalpn'* ]]
+[[ "$first_user_output" == *'Hysteria ECH: decoy.example.com'* ]]
+[[ "$first_user_output" != *'subscription_token'* ]]
 
 grep -q 'xraydo tls renew-daemon --interval 3600 --jitter 300' "$ROOT_DIR/install.sh"
 grep -q 'enable --now xraydo-tls-renew.service' "$ROOT_DIR/install.sh"
+grep -q 'WantedBy=multi-user.target' "$ROOT_DIR/install.sh"
+grep -q 'systemctl enable "xraydo-\$core.service"' "$ROOT_DIR/install.sh"
+grep -q 'systemctl is-enabled --quiet "xraydo-\$core.service"' "$ROOT_DIR/install.sh"
+grep -q 'systemctl restart "xraydo-\$core.service"' "$ROOT_DIR/install.sh"
+grep -q 'systemctl is-active --quiet "xraydo-\$core.service"' "$ROOT_DIR/install.sh"
+grep -q 'rc-update add "xraydo-\$core" default' "$ROOT_DIR/install.sh"
 grep -q 'compgen -G.*src/xraydo/data/\*\.json' "$ROOT_DIR/install.sh"
 grep -q 'tls renew-daemon --once' "$ROOT_DIR/install.sh"
+grep -q 'port_owner 443' "$ROOT_DIR/install.sh"
+grep -q 'user create.*FIRST_USER_NAME' "$ROOT_DIR/install.sh"
+grep -q 'core reality' "$ROOT_DIR/install.sh"
+grep -q 'core hysteria' "$ROOT_DIR/install.sh"
+grep -q 'core telemt' "$ROOT_DIR/install.sh"
+grep -q 'hysteria.*ech --public-name' "$ROOT_DIR/install.sh"
+grep -q 'subscription qr.*--token-file' "$ROOT_DIR/install.sh"
+grep -q 'qrencode -t ANSIUTF8 -o -' "$ROOT_DIR/install.sh"
+
+health_line="$(grep -n 'Xray version health-check' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"
+create_line="$(grep -n 'user create.*FIRST_USER_NAME' "$ROOT_DIR/install.sh" | head -n 1 | cut -d: -f1)"
+((health_line < create_line))
+
+uninstall_prefix="$TEMP_DIR/uninstall-prefix"
+mkdir -p "$uninstall_prefix/bin" "$uninstall_prefix/lib/xraydo" \
+    "$uninstall_prefix/share/doc/xraydo" "$uninstall_prefix/etc/xraydo" \
+    "$uninstall_prefix/var/lib/xraydo"
+touch "$uninstall_prefix/bin/xraydo" "$uninstall_prefix/bin/xray" \
+    "$uninstall_prefix/bin/hysteria" "$uninstall_prefix/bin/telemt" \
+    "$uninstall_prefix/etc/xraydo/config.json" "$uninstall_prefix/var/lib/xraydo/state.json"
+uninstall_output="$("$ROOT_DIR/install.sh" --prefix "$uninstall_prefix" --uninstall --non-interactive --yes)"
+[[ "$uninstall_output" == *'configuration and state were preserved'* ]]
+[[ ! -e "$uninstall_prefix/bin/xraydo" ]]
+[[ ! -e "$uninstall_prefix/lib/xraydo" ]]
+[[ -e "$uninstall_prefix/etc/xraydo/config.json" ]]
+[[ -e "$uninstall_prefix/var/lib/xraydo/state.json" ]]
+
+purge_output="$("$ROOT_DIR/install.sh" --prefix "$uninstall_prefix" --purge --non-interactive --yes)"
+[[ "$purge_output" == *'credentials and cryptographic keys were removed'* ]]
+[[ ! -e "$uninstall_prefix/etc/xraydo" ]]
+[[ ! -e "$uninstall_prefix/var/lib/xraydo" ]]
+
+dry_prefix="$TEMP_DIR/dry-purge-prefix"
+mkdir -p "$dry_prefix/etc/xraydo"
+touch "$dry_prefix/etc/xraydo/config.json"
+dry_purge_output="$("$ROOT_DIR/install.sh" --prefix "$dry_prefix" --purge --dry-run --non-interactive)"
+[[ "$dry_purge_output" == *'"action":"purge"'* ]]
+[[ -e "$dry_prefix/etc/xraydo/config.json" ]]
 
 if "$ROOT_DIR/install.sh" --role invalid --dry-run --non-interactive >/dev/null 2>&1; then
     printf 'invalid role was accepted\n' >&2

@@ -92,6 +92,29 @@ def enqueue_access_key(
             "last_delivery_error": None, "created_at": timestamp, "updated_at": timestamp,
         }
         operations.append(operation); created.append(operation)
+    # Telemt uses the same immutable AccessKey identity, but its user API and
+    # links are kept separate from ordinary proxy subscription entries.
+    for core in data.get("node_cores", []):
+        if core.get("core") != "telemt" or not core.get("enabled", True):
+            continue
+        node_id = core["node_id"]
+        if node_ids is not None and node_id not in node_ids:
+            continue
+        operation = {
+            "id": str(uuid.uuid4()), "node_id": node_id, "resource_type": "telemt_user",
+            "resource_id": resource_id, "owner_id": owner_id,
+            "action": "delete" if action == "revoke" or key.get("state") == "revoked" else "upsert",
+            "revision": key["updated_at"],
+            "payload": {"access_key_id": resource_id,
+                        "username": "k_" + resource_id.replace("-", ""),
+                        "secret": key.get("credentials", {}).get("telemt_secret")
+                                  if key.get("state") == "active" else None,
+                        "enabled": key.get("state") == "active", "api_preferred": True,
+                        "atomic_config_fallback": True, "controlled_restart_if_required": True},
+            "state": "pending", "attempts": 0, "last_error": None,
+            "last_delivery_error": None, "created_at": timestamp, "updated_at": timestamp,
+        }
+        operations.append(operation); created.append(operation)
     return created
 
 
@@ -205,15 +228,27 @@ class SyncQueueService:
                                     else "hysteria2@" + operation["node_id"])
                     key.setdefault("endpoints", {})[endpoint_key] = endpoint
                     key["updated_at"] = _now()
+        if not error and operation.get("resource_type") in {"telemt_user", "telemt_inbound"} and result:
+            endpoint = result.get("endpoint")
+            if isinstance(endpoint, dict) and any(isinstance(endpoint.get(field), str)
+                                                  for field in ("tg_uri", "https_uri")):
+                key = next((item for item in data.get("access_keys", [])
+                            if item["id"] == operation["resource_id"]), None)
+                if key is not None and key.get("state") == "active":
+                    endpoint = copy.deepcopy(endpoint); endpoint["node_id"] = operation["node_id"]
+                    endpoint_key = ("telemt" if operation["node_id"] == "local"
+                                    else "telemt@" + operation["node_id"])
+                    key.setdefault("endpoints", {})[endpoint_key] = endpoint
+                    key["updated_at"] = _now()
         if not error and operation.get("resource_type") == "core" and result:
             core = result.get("core")
-            if isinstance(core, dict) and core.get("core") == "hysteria2":
+            if isinstance(core, dict) and core.get("core") in {"hysteria2", "telemt"}:
                 reported = copy.deepcopy(core)
                 reported["node_id"] = operation["node_id"]
                 records = data.setdefault("node_cores", [])
                 current = next((item for item in records
                                 if item.get("node_id") == operation["node_id"]
-                                and item.get("core") == "hysteria2"), None)
+                                and item.get("core") == reported["core"]), None)
                 if current is None:
                     records.append(reported)
                 else:

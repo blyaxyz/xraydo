@@ -24,6 +24,7 @@ class LocaleTests(unittest.TestCase):
             "HysteriaError",
             "HysteriaManagerError",
             "TelemtError",
+            "TelemtManagerError",
             "CoreServiceError",
             "InboundError",
         }

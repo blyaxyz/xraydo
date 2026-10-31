@@ -60,6 +60,9 @@ class Store:
             "node_cores": [],
             "core_versions": [],
             "hysteria_diagnostics": [],
+            "telemt_artifacts": [],
+            "telemt_diagnostics": [],
+            "telemt_usage_cursors": [],
         }
 
     @staticmethod
@@ -241,7 +244,9 @@ class Store:
         if "reality_checks" not in data:
             data["reality_checks"] = []
             changed = True
-        for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions", "hysteria_diagnostics"):
+        for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions",
+                           "hysteria_diagnostics", "telemt_artifacts", "telemt_diagnostics",
+                           "telemt_usage_cursors"):
             if collection not in data:
                 data[collection] = []
                 changed = True
