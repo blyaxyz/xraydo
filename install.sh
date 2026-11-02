@@ -1754,6 +1754,10 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
         chmod 0600 "$telemt_json"
         mtproto_link="$(sed -n 's/.*"uri": "\(tg:\/\/proxy?[^"]*\)".*/\1/p' "$telemt_json" | head -n 1)"
+        first_user_details="$TEMP_DIR/first-user-details.txt"
+        root_exec "$BINARY_PATH" user show "$FIRST_USER_NAME" >"$first_user_details" || \
+            fail "first-user keys could not be rendered"
+        chmod 0600 "$first_user_details"
         if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
             {
                 printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
@@ -1763,6 +1767,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
                     printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
                 fi
                 [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
+                printf '\nBase user, subscription content and access keys:\n'
+                cat "$first_user_details"
                 printf '\nSubscription QR:\n'
             } >/dev/tty
             root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
@@ -1780,6 +1786,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
                     printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
                 fi
                 [[ -z "$mtproto_link" ]] || printf 'MTProto: %s\n' "$mtproto_link"
+                printf '\nBase user, subscription content and access keys:\n'
+                cat "$first_user_details"
             } >"$credentials_tmp")
             root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
             printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
@@ -1798,11 +1806,17 @@ if [[ "$TELEMT_ONLY" == true ]]; then
     mtproto_https_link="$(python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); print(next((item["uri"] for item in data["links"] if item.get("format") == "https_uri"), ""))' "$telemt_json")"
     [[ -n "$mtproto_link" && -n "$mtproto_https_link" ]] || \
         fail "Telemt connection links are missing after configuration"
+    telemt_user_details="$TEMP_DIR/telemt-user-details.txt"
+    root_exec "$BINARY_PATH" user show "$FIRST_USER_NAME" >"$telemt_user_details" || \
+        fail "Telemt base-user keys could not be rendered"
+    chmod 0600 "$telemt_user_details"
     credentials_file="$DATA_DIR/telemt-$FIRST_USER_NAME.txt"
     credentials_tmp="$TEMP_DIR/telemt-credentials.txt"
     (umask 077; {
         printf 'Telegram: %s\n' "$mtproto_link"
         printf 'Telegram HTTPS: %s\n' "$mtproto_https_link"
+        printf '\nBase user and access keys:\n'
+        cat "$telemt_user_details"
     } >"$credentials_tmp")
     root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
     if [[ "$LANGUAGE" == "ru" ]]; then
@@ -1811,6 +1825,9 @@ if [[ "$TELEMT_ONLY" == true ]]; then
         printf '====================================================================\n\n'
         printf 'Ссылка для подключения Telegram Proxy:\n%s\n\n' "$mtproto_link"
         printf 'HTTPS-ссылка:\n%s\n\n' "$mtproto_https_link"
+        printf 'Базовый пользователь и ключи:\n'
+        cat "$telemt_user_details"
+        printf '\n'
         printf 'Копия сохранена с правами 0600: %s\n' "$credentials_file"
     else
         printf '\n====================================================================\n'
@@ -1818,6 +1835,9 @@ if [[ "$TELEMT_ONLY" == true ]]; then
         printf '====================================================================\n\n'
         printf 'Your Telegram Proxy connection link:\n%s\n\n' "$mtproto_link"
         printf 'HTTPS connection link:\n%s\n\n' "$mtproto_https_link"
+        printf 'Base user and access keys:\n'
+        cat "$telemt_user_details"
+        printf '\n'
         printf 'A mode-0600 copy is stored at: %s\n' "$credentials_file"
     fi
 fi

@@ -68,6 +68,36 @@ class CliTests(unittest.TestCase):
         self.assertEqual(by_short_id["numeric_id"], 2)
         self.assertEqual(by_hash_number["id"], second["id"])
 
+    def test_user_card_and_key_show_include_complete_credentials(self) -> None:
+        created = json.loads(
+            run_cli(self.path, "--json", "user", "create", "alice").stdout
+        )["user"]
+        self.assertEqual(
+            run_cli(self.path, "user", "set-note", "alice", "priority customer").returncode,
+            0,
+        )
+        state_path = self.path / "data" / "state.json"
+        state = json.loads(state_path.read_text())
+        key = next(item for item in state["access_keys"] if item["user_id"] == created["id"])
+        key["endpoints"]["hysteria2"] = {"uri": "hysteria2://secret@example.test:443"}
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        card_result = run_cli(self.path, "--json", "user", "show", "alice")
+        self.assertEqual(card_result.returncode, 0, card_result.stderr)
+        card = json.loads(card_result.stdout)
+        self.assertEqual(card["comment"], "priority customer")
+        self.assertEqual(card["access_keys"][0]["credentials"], key["credentials"])
+        self.assertEqual(card["subscription"]["entries"][0]["protocol"], "hysteria2")
+
+        shown = json.loads(
+            run_cli(self.path, "--json", "key", "show", key["id"]).stdout
+        )["access_key"]
+        self.assertEqual(shown["credentials"], key["credentials"])
+        redacted = json.loads(
+            run_cli(self.path, "--json", "key", "show", key["id"], "--redact").stdout
+        )["access_key"]
+        self.assertEqual(set(redacted["credentials"].values()), {"***"})
+
     def test_subscription_rotation_and_revocation_cli(self) -> None:
         created = json.loads(run_cli(self.path, "--json", "user", "create", "alice").stdout)
         old_token = created["subscription_token"]

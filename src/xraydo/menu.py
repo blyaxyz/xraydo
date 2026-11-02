@@ -124,7 +124,111 @@ def _users_menu(runner: CommandRunner, translator: Translator) -> str:
         _execute(runner, translator, ["user", "create", name])
 
     def show() -> None:
-        _execute(runner, translator, ["user", "show", _required(translator, "menu.prompt.user")])
+        reference = _required(translator, "menu.prompt.user")
+        _execute(runner, translator, ["user", "show", reference])
+
+        def refresh() -> None:
+            _execute(runner, translator, ["user", "show", reference])
+
+        def card_rename() -> None:
+            _execute(runner, translator, [
+                "user", "rename", reference,
+                _required(translator, "menu.prompt.new_name"),
+            ])
+
+        def card_enabled() -> None:
+            _execute(runner, translator, [
+                "user", "set-enabled", reference,
+                _required(translator, "menu.prompt.on_off", "on"),
+            ])
+
+        def card_note() -> None:
+            _execute(runner, translator, [
+                "user", "set-note", reference,
+                _required(translator, "menu.prompt.note"),
+            ])
+
+        def card_tags() -> None:
+            _execute(runner, translator, [
+                "user", "set-tags", reference,
+                _required(translator, "menu.prompt.tags"),
+            ])
+
+        def card_key_create() -> None:
+            _execute(runner, translator, [
+                "key", "create", "--user", reference, "--device",
+                _required(translator, "menu.prompt.device", "default"),
+            ])
+
+        def card_key_state(action: str, confirm: bool = False) -> Callable[[], None]:
+            def run() -> None:
+                key_id = _required(translator, "menu.prompt.key")
+                if confirm and not _confirm(translator):
+                    print(translator.get("menu.cancelled"))
+                    return
+                _execute(runner, translator, ["key", action, key_id])
+            return run
+
+        def card_delete_plan() -> None:
+            _execute(runner, translator, [
+                "user", "delete-plan", reference, "--grace",
+                _required(translator, "menu.prompt.grace", "1d"),
+            ])
+
+        def card_delete() -> None:
+            grace = _required(translator, "menu.prompt.grace", "1d")
+            if not _confirm(translator):
+                print(translator.get("menu.cancelled"))
+                return
+            _execute(runner, translator, [
+                "user", "delete", reference, "--grace", grace, "--yes",
+            ])
+
+        def card_purge() -> None:
+            if not _confirm(translator):
+                print(translator.get("menu.cancelled"))
+                return
+            _execute(runner, translator, ["user", "purge", reference, "--yes"])
+
+        def card_subscription(action: str, confirm: bool = False) -> Callable[[], None]:
+            def run() -> None:
+                if confirm and not _confirm(translator):
+                    print(translator.get("menu.cancelled"))
+                    return
+                arguments = ["subscription", action, reference]
+                if action == "show":
+                    arguments.extend(["--format", "plain"])
+                _execute(runner, translator, arguments)
+            return run
+
+        _submenu(
+            translator,
+            translator.get("menu.users.card", user=reference),
+            (
+                ("1", translator.get("menu.users.refresh"), refresh),
+                ("2", translator.get("menu.users.rename"), card_rename),
+                ("3", translator.get("menu.users.enabled"), card_enabled),
+                ("4", translator.get("menu.users.note"), card_note),
+                ("5", translator.get("menu.users.tags"), card_tags),
+                ("6", translator.get("menu.keys.list_full"), lambda: _execute(
+                    runner, translator, ["key", "list", "--user", reference, "--full"]
+                )),
+                ("7", translator.get("menu.keys.create"), card_key_create),
+                ("8", translator.get("menu.subscription.show"), card_subscription("show")),
+                ("9", translator.get("menu.subscription.rotate"), card_subscription("rotate", True)),
+                ("10", translator.get("menu.subscription.revoke"), card_subscription("revoke", True)),
+                ("11", translator.get("menu.keys.disable"), card_key_state("disable")),
+                ("12", translator.get("menu.keys.enable"), card_key_state("enable")),
+                ("13", translator.get("menu.keys.revoke"), card_key_state("revoke", True)),
+                ("14", translator.get("menu.users.delete_plan"), card_delete_plan),
+                ("15", translator.get("menu.users.delete"), card_delete),
+                ("16", translator.get("menu.users.delete_status"), lambda: _execute(
+                    runner, translator, ["user", "delete-status", reference]
+                )),
+                ("17", translator.get("menu.users.purge"), card_purge),
+            ),
+        )
+        _execute(runner, translator, ["user", "list"])
 
     def search() -> None:
         _execute(runner, translator, ["user", "search", _required(translator, "menu.prompt.query")])
@@ -173,6 +277,7 @@ def _users_menu(runner: CommandRunner, translator: Translator) -> str:
             return
         _execute(runner, translator, ["user", "purge", reference, "--yes"])
 
+    _execute(runner, translator, ["user", "list"])
     return _submenu(
         translator,
         translator.get("menu.users.title"),

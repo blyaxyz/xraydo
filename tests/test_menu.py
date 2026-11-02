@@ -42,7 +42,20 @@ class InteractiveMenuTests(unittest.TestCase):
     def test_nested_user_creation_and_back_navigation(self) -> None:
         result, commands, _output = self.run_menu(["1", "2", "alice", "0", "0"])
         self.assertEqual(result, 0)
-        self.assertEqual(commands, [["user", "create", "alice"]])
+        self.assertEqual(commands, [["user", "list"], ["user", "create", "alice"]])
+
+    def test_user_card_lists_immediately_and_reuses_selected_user(self) -> None:
+        result, commands, output = self.run_menu([
+            "1", "3", "alice", "6", "0", "0", "0",
+        ])
+        self.assertEqual(result, 0)
+        self.assertEqual(commands, [
+            ["user", "list"],
+            ["user", "show", "alice"],
+            ["key", "list", "--user", "alice", "--full"],
+            ["user", "list"],
+        ])
+        self.assertIn("Show all access keys and secrets", output)
 
     def test_advanced_command_uses_shlex_without_shell(self) -> None:
         result, commands, _output = self.run_menu(["9", 'xraydo user search "team a"', "0"])

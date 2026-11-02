@@ -350,9 +350,11 @@ def parser() -> argparse.ArgumentParser:
     key_create.add_argument("--device", default="default")
     key_list = key_commands.add_parser("list")
     key_list.add_argument("--user", required=True)
+    key_list.add_argument("--full", action="store_true", help="show complete credentials and endpoints")
     key_show = key_commands.add_parser("show")
     key_show.add_argument("key_id")
     key_show.add_argument("--show-secrets", action="store_true")
+    key_show.add_argument("--redact", action="store_true", help="hide credentials")
     key_disable = key_commands.add_parser("disable")
     key_disable.add_argument("key_id")
     key_disable.add_argument(
@@ -778,10 +780,98 @@ def print_users(users: list[dict[str, object]], translator: Translator) -> None:
         print(translator.get("users.empty"))
     for user in users:
         state = "enabled" if user["enabled"] else "disabled"
+        note = str(user.get("note") or "").replace("\n", " ").strip()
+        suffix = f"  — {note}" if note else ""
         print(
             f"#{user['numeric_id']}  {user['id']}  {user['name']}  "
-            f"{translator.get(f'user.state.{state}')}"
+            f"{translator.get(f'user.state.{state}')}{suffix}"
         )
+
+
+def user_admin_view(
+    user: dict[str, object],
+    keys: AccessKeyService,
+    subscriptions: SubscriptionService,
+) -> dict[str, object]:
+    access_keys = [
+        public_access_key(item, show_secrets=True)
+        for item in keys.list(str(user["id"]))
+    ]
+    status = {
+        "state": user.get("subscription_state", "active"),
+        "enabled": user.get("enabled", True),
+    }
+    try:
+        subscription: dict[str, object] = {
+            **status,
+            **subscriptions.build(str(user["id"])),
+        }
+    except ValueError as error:
+        subscription = {**status, "error": str(error), "entries": [], "mtproto": []}
+    return {
+        "user": user,
+        "comment": user.get("note"),
+        "subscription": subscription,
+        "access_keys": access_keys,
+    }
+
+
+def render_user_admin(view: dict[str, object], translator: Translator) -> str:
+    user = view["user"]
+    assert isinstance(user, dict)
+    subscription = view["subscription"]
+    assert isinstance(subscription, dict)
+    access_keys = view["access_keys"]
+    assert isinstance(access_keys, list)
+    state = "enabled" if user.get("enabled", True) else "disabled"
+    lines = [
+        translator.get(
+            "user.card.title",
+            numeric_id=user.get("numeric_id"),
+            name=user.get("name"),
+            user_id=user.get("id"),
+        ),
+        translator.get("user.card.state", state=translator.get(f"user.state.{state}")),
+        translator.get("user.card.comment", comment=user.get("note") or "—"),
+        translator.get(
+            "user.card.tags",
+            tags=", ".join(user.get("tags", [])) if user.get("tags") else "—",
+        ),
+        "",
+        translator.get(
+            "user.card.subscription",
+            state=subscription.get("state", "unknown"),
+        ),
+    ]
+    if subscription.get("error"):
+        lines.append(translator.get("user.card.unavailable", error=subscription["error"]))
+    for entry in subscription.get("entries", []):
+        if isinstance(entry, dict) and entry.get("uri"):
+            lines.append(f"  {entry.get('protocol', 'key')}: {entry['uri']}")
+    for entry in subscription.get("mtproto", []):
+        if isinstance(entry, dict) and entry.get("uri"):
+            lines.append(f"  {entry.get('format', 'mtproto')}: {entry['uri']}")
+    lines.extend(["", translator.get("user.card.keys", count=len(access_keys))])
+    for item in access_keys:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"  [{item.get('state', 'unknown')}] {item.get('id')} · {item.get('device_name', 'default')}"
+        )
+        credentials = item.get("credentials", {})
+        if isinstance(credentials, dict):
+            for name, value in credentials.items():
+                lines.append(f"    {name}: {value}")
+        endpoints = item.get("endpoints", {})
+        if isinstance(endpoints, dict):
+            for protocol, endpoint in endpoints.items():
+                if not isinstance(endpoint, dict):
+                    continue
+                lines.append(f"    {protocol}:")
+                for field in ("uri", "tg_uri", "https_uri", "server", "port", "tls_domain"):
+                    if endpoint.get(field) not in (None, ""):
+                        lines.append(f"      {field}: {endpoint[field]}")
+    return "\n".join(lines) + "\n"
 
 
 def read_secret_file(path: Path) -> str:
@@ -1185,7 +1275,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print_users(users, translator)
             elif args.user_command == "show":
                 user = service.find(args.reference)
-                emit({"user": user}, json.dumps(user, ensure_ascii=False, indent=2), args.json)
+                view = user_admin_view(user, keys, subscriptions)
+                emit(view, render_user_admin(view, translator), args.json)
             elif args.user_command == "set-enabled":
                 user = service.set_enabled(args.reference, args.value == "on")
                 state = "enabled" if user["enabled"] else "disabled"
@@ -1555,15 +1646,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
             elif args.key_command == "list":
                 user = service.find(args.user)
-                access_keys = [public_access_key(item) for item in keys.list(user["id"])]
+                access_keys = [
+                    public_access_key(item, show_secrets=args.full)
+                    for item in keys.list(user["id"])
+                ]
                 if args.json:
                     emit({"access_keys": access_keys}, "", True)
+                elif args.full:
+                    print(json.dumps(access_keys, ensure_ascii=False, indent=2))
                 else:
                     for item in access_keys:
                         print(f"{item['id']}  {item['device_name']}  {item['state']}")
             elif args.key_command == "show":
                 access_key = keys.find(args.key_id)
-                visible = public_access_key(access_key, args.show_secrets)
+                visible = public_access_key(
+                    access_key,
+                    show_secrets=args.show_secrets or not args.redact,
+                )
                 emit(
                     {"access_key": visible},
                     json.dumps(visible, ensure_ascii=False, indent=2),
