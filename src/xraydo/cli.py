@@ -15,7 +15,13 @@ from typing import Optional, Sequence
 from . import __version__
 from .access_keys import AccessKeyService
 from .acme import CertbotManager
-from .countries import detect_countries, load_countries
+from .countries import (
+    detect_countries,
+    detect_public_location,
+    format_key_name,
+    get_country,
+    load_countries,
+)
 from .control_plane import ControlPKI, ControlPlaneService, serve_control_plane
 from .health import core_health, overall_health
 from .hysteria import configure_hysteria
@@ -734,6 +740,29 @@ def public_access_key(key: dict[str, object], show_secrets: bool = False) -> dic
     return result
 
 
+def localized_key_context(
+    store: Store,
+    device_name: str,
+    language: str,
+) -> tuple[str, Optional[dict[str, str]]]:
+    data = store.load()
+    settings = data.setdefault("settings", {})
+    if not settings.get("country_auto_flags", True):
+        return device_name, None
+    cached = settings.get("server_location")
+    location = cached if isinstance(cached, dict) else None
+    country = get_country(str(location.get("country", ""))) if location else None
+    if country is None:
+        location = detect_public_location()
+        if location:
+            country = get_country(location["country"])
+            with store.transaction() as current:
+                current.setdefault("settings", {})["server_location"] = location
+    if not location or country is None:
+        return device_name, None
+    return format_key_name(device_name, country, language), location
+
+
 def user_for_access_key(user: dict[str, object], key: dict[str, object]) -> dict[str, object]:
     result = dict(user)
     result["credentials"] = key["credentials"]
@@ -1254,7 +1283,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 emit({"agent": result}, f"Node certificate rotated: {result['node_id']}", args.json)
         elif args.command in {"user", "users"}:
             if args.user_command in {"create", "new"}:
-                user, token = service.create(args.name)
+                device_name, location = localized_key_context(store, "default", language)
+                user, token = service.create(
+                    args.name,
+                    default_device_name=device_name,
+                    location=location,
+                )
                 emit(
                     {"user": user, "subscription_token": token},
                     translator.get(
@@ -1634,7 +1668,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.command in {"key", "keys"}:
             if args.key_command == "create":
                 user = service.find(args.user)
-                access_key = keys.create(user["id"], args.device)
+                device_name, location = localized_key_context(store, args.device, language)
+                access_key = keys.create(user["id"], device_name, location)
                 emit(
                     {"access_key": public_access_key(access_key, show_secrets=True)},
                     translator.get(
@@ -1773,7 +1808,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f"{event['object_type']}:{event['object_id']}  {','.join(event['fields'])}"
                     )
         elif args.command == "newUser":
-            user, token = service.create(args.name)
+            device_name, location = localized_key_context(store, "default", language)
+            user, token = service.create(
+                args.name,
+                default_device_name=device_name,
+                location=location,
+            )
             emit(
                 {"user": user, "subscription_token": token},
                 translator.get("user.created", name=user["name"], id=user["id"])

@@ -50,7 +50,13 @@ class UserService:
         append_audit(data, actor=actor, action=action, object_type="user",
                      object_id=user_id, fields=fields)
 
-    def create(self, name: str) -> tuple[dict[str, Any], str]:
+    def create(
+        self,
+        name: str,
+        *,
+        default_device_name: str = "default",
+        location: Optional[dict[str, str]] = None,
+    ) -> tuple[dict[str, Any], str]:
         name = name.strip()
         if not name or len(name) > 64 or any(ord(char) < 32 for char in name):
             raise ValueError("invalid_name")
@@ -80,7 +86,7 @@ class UserService:
             token, credential = self._new_subscription_credential(user["id"], timestamp)
             data["users"].append(user)
             data.setdefault("subscription_credentials", []).append(credential)
-            key = new_access_key(user["id"])
+            key = new_access_key(user["id"], default_device_name, location)
             data["access_keys"].append(key)
             enqueue_access_key(data, key)
             self._audit(data, actor=self._actor(), action="user.create",

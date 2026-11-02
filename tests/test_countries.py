@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import unittest
 
 from xraydo.countries import (
     detect_countries,
+    detect_public_location,
+    format_key_name,
     format_remark,
     get_country,
     load_countries,
@@ -51,3 +54,33 @@ class CountryTests(unittest.TestCase):
         self.assertEqual(format_remark("Germany", germany), "🇩🇪 Germany")
         self.assertEqual(format_remark("🇩🇪 Germany", germany), "🇩🇪 Germany")
         self.assertEqual(format_remark("🇫🇷 Germany", germany), "🇩🇪 Germany")
+
+    def test_key_name_contains_localized_country_and_preserves_device(self) -> None:
+        germany = get_country("DE")
+        assert germany is not None
+        self.assertEqual(format_key_name("phone", germany, "en"), "🇩🇪 Germany · phone")
+        self.assertEqual(format_key_name("phone", germany, "ru"), "🇩🇪 Германия · phone")
+        self.assertEqual(
+            format_key_name("🇩🇪 Germany · phone", germany, "ru"),
+            "🇩🇪 Германия · phone",
+        )
+
+    def test_public_location_uses_validated_ip_and_country(self) -> None:
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        def opener(request, timeout):
+            self.assertEqual(request.full_url, "https://geo.example/")
+            self.assertEqual(timeout, 0.5)
+            return Response(b'{"ip":"8.8.8.8","country":"DE"}')
+
+        self.assertEqual(
+            detect_public_location(
+                url="https://geo.example/", timeout=0.5, opener=opener
+            ),
+            {"ip": "8.8.8.8", "country": "DE", "source": "https://geo.example/"},
+        )

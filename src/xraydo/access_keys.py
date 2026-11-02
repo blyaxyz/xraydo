@@ -62,7 +62,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def new_access_key(user_id: str, device_name: str = "default") -> dict[str, Any]:
+def new_access_key(
+    user_id: str,
+    device_name: str = "default",
+    location: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
     device_name = device_name.strip()
     if not device_name or len(device_name) > 128 or any(ord(char) < 32 for char in device_name):
         raise ValueError("invalid_device_name")
@@ -71,6 +75,7 @@ def new_access_key(user_id: str, device_name: str = "default") -> dict[str, Any]
         "id": str(uuid.uuid4()),
         "user_id": user_id,
         "device_name": device_name,
+        "location": dict(location) if location else None,
         "state": "active",
         "disabled_reason": None,
         "credentials": {
@@ -118,11 +123,16 @@ class AccessKeyService:
             raise ValueError("access_key_not_found")
         return matches[0]
 
-    def create(self, user_id: str, device_name: str = "default") -> dict[str, Any]:
+    def create(
+        self,
+        user_id: str,
+        device_name: str = "default",
+        location: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
         data = self.store.load()
         if not any(user["id"] == user_id for user in data["users"]):
             raise ValueError("user_not_found")
-        key = new_access_key(user_id, device_name)
+        key = new_access_key(user_id, device_name, location)
         data["access_keys"].append(key)
         enqueue_access_key(data, key)
         append_audit(data, action="access_key.create", object_type="access_key",

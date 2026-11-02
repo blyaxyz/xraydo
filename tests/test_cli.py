@@ -15,6 +15,7 @@ def run_cli(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(ROOT / "src")
     environment["XRAYDO_DATA_DIR"] = str(tmp_path / "data")
+    environment["XRAYDO_GEOIP_URL"] = "off"
     return subprocess.run(
         [sys.executable, "-m", "xraydo.cli", *arguments],
         text=True,
@@ -97,6 +98,27 @@ class CliTests(unittest.TestCase):
             run_cli(self.path, "--json", "key", "show", key["id"], "--redact").stdout
         )["access_key"]
         self.assertEqual(set(redacted["credentials"].values()), {"***"})
+
+    def test_key_create_uses_cached_server_country_in_name(self) -> None:
+        run_cli(self.path, "--json", "user", "create", "alice")
+        state_path = self.path / "data" / "state.json"
+        state = json.loads(state_path.read_text())
+        state["settings"]["server_location"] = {
+            "ip": "8.8.8.8",
+            "country": "DE",
+            "source": "https://api.country.is/",
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        created = run_cli(
+            self.path,
+            "--lang", "ru", "--json", "key", "create",
+            "--user", "alice", "--device", "phone",
+        )
+        self.assertEqual(created.returncode, 0, created.stderr)
+        key = json.loads(created.stdout)["access_key"]
+        self.assertEqual(key["device_name"], "🇩🇪 Германия · phone")
+        self.assertEqual(key["location"]["country"], "DE")
 
     def test_subscription_rotation_and_revocation_cli(self) -> None:
         created = json.loads(run_cli(self.path, "--json", "user", "create", "alice").stdout)

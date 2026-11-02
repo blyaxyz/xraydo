@@ -184,6 +184,26 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(stored_key["credentials"], credentials_before)
         self.assertEqual(stored_key["endpoints"]["hysteria2"]["uri"], stored_uri)
 
+    def test_geolocated_key_name_is_used_as_client_remark(self) -> None:
+        key = self.keys.default_for_user(self.user["id"])
+        state = self.store.load()
+        stored = next(item for item in state["access_keys"] if item["id"] == key["id"])
+        stored["device_name"] = "🇩🇪 Germany · phone"
+        stored["location"] = {"ip": "8.8.8.8", "country": "DE"}
+        self.store.save(state)
+        self.keys.set_endpoint(
+            key["id"],
+            "hysteria2",
+            {"uri": "hysteria2://secret@example.test:443"},
+        )
+
+        entry = self.subscriptions.build(self.user["id"])["entries"][0]
+        self.assertEqual(entry["remark"], "🇩🇪 Germany · phone")
+        self.assertEqual(
+            urllib.parse.unquote(urllib.parse.urlsplit(entry["uri"]).fragment),
+            "🇩🇪 Germany · phone",
+        )
+
     def test_admin_metadata_never_reaches_subscription_or_node_payload(self) -> None:
         private_values = [
             "private-note-7f2a",

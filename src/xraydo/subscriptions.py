@@ -74,6 +74,7 @@ class SubscriptionService:
         for key in data.get("access_keys", []):
             if key["user_id"] != user_id or key["state"] != "active":
                 continue
+            key_remark = key["device_name"] if key.get("location") else identity["remark"]
             for protocol, endpoint in key.get("endpoints", {}).items():
                 base_protocol = protocol.split("@", 1)[0]
                 if not endpoint.get("enabled", True):
@@ -84,12 +85,12 @@ class SubscriptionService:
                     pin = None
                     if base_protocol == "hysteria2":
                         uri, pin = _hysteria_pin(uri, endpoint.get("pin_sha256"))
-                    uri = _with_remark(uri, identity["remark"])
+                    uri = _with_remark(uri, key_remark)
                     entry = {
                         "access_key_id": key["id"],
                         "node_id": node_id,
                         "protocol": base_protocol,
-                        "remark": identity["remark"],
+                        "remark": key_remark,
                         "uri": uri,
                     }
                     if pin:

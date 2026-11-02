@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+import ipaddress
+import os
 import unicodedata
+import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+
+DEFAULT_GEOIP_URL = "https://api.country.is/"
 
 
 def normalize_country_text(value: str) -> str:
@@ -68,3 +74,57 @@ def format_remark(name: str, country: dict[str, Any]) -> str:
     existing = _leading_flag(name)
     unflagged = name[len(existing):].lstrip() if existing else name
     return f"{flag} {unflagged}"
+
+
+def format_key_name(
+    name: str,
+    country: dict[str, Any],
+    language: str = "en",
+    max_length: int = 128,
+) -> str:
+    """Build a stable client label: flag, localized country, then key name."""
+    base = name.strip()
+    existing = _leading_flag(base)
+    if existing:
+        base = base[len(existing):].lstrip()
+    for known_name in (*country["names"].values(), country["iso"]):
+        prefix = f"{known_name} ·"
+        if base.casefold().startswith(prefix.casefold()):
+            base = base[len(prefix):].lstrip()
+            break
+    base = base or "default"
+    localized_country = country["names"].get(language, country["names"]["en"])
+    prefix = f"{country['flag']} {localized_country} · "
+    available = max_length - len(prefix)
+    if available < 1:
+        raise ValueError("invalid_device_name")
+    return prefix + base[:available].rstrip()
+
+
+def detect_public_location(
+    *,
+    timeout: float = 2.0,
+    url: Optional[str] = None,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> Optional[dict[str, str]]:
+    """Resolve the calling server's public IP and ISO country, failing open."""
+    endpoint = url or os.environ.get("XRAYDO_GEOIP_URL", DEFAULT_GEOIP_URL)
+    if endpoint.casefold() in {"off", "none", "disabled"}:
+        return None
+    try:
+        request = urllib.request.Request(
+            endpoint,
+            headers={"Accept": "application/json", "User-Agent": "xraydo/geoip"},
+        )
+        with opener(request, timeout=timeout) as response:
+            payload = json.loads(response.read(4097))
+        if not isinstance(payload, dict):
+            return None
+        address = str(payload.get("ip", "")).strip()
+        iso = str(payload.get("country", "")).strip().upper()
+        parsed_address = ipaddress.ip_address(address)
+        if not parsed_address.is_global or get_country(iso) is None:
+            return None
+        return {"ip": str(parsed_address), "country": iso, "source": endpoint}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
