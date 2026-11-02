@@ -57,7 +57,12 @@ def _resolve(host: str, port: int, allow_private: bool = False) -> list[str]:
         raise RealityError("dns")
     if any(_blocked(item) for item in addresses) and not allow_private:
         raise RealityError("reality_private_target")
-    return addresses
+    # Prefer IPv4 on hosts without a working IPv6 route, but retain every
+    # public address so a failed edge can be skipped during the TLS probe.
+    return sorted(addresses, key=lambda value: (
+        ipaddress.ip_address(value).version,
+        int(ipaddress.ip_address(value)),
+    ))
 
 
 def _proxy_header(raw: socket.socket, version: int) -> bytes:
@@ -162,17 +167,36 @@ def scan_target(host: str, port: int = 443, timeout: float = MAX_TIMEOUT, *,
     addresses = _resolve(host, port, allow_private)
     selected_sni = sni.rstrip(".").lower() if sni else None
     address = addresses[0]
+
+    def probe_addresses(probe_sni: Optional[str], verify: bool) -> tuple[str, dict[str, Any]]:
+        deadline = time.monotonic() + timeout
+        last_error: Optional[RealityError] = None
+        for candidate in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                return candidate, _tls_probe(
+                    candidate, port, probe_sni, remaining, xver, verify
+                )
+            except RealityError as error:
+                last_error = error
+        if last_error is not None:
+            raise last_error
+        raise RealityError("timeout")
+
     if selected_sni is None:
         try:
             ipaddress.ip_address(host)
         except ValueError:
             selected_sni = host.rstrip(".").lower()
         else:
-            candidates = _non_wildcard_sans(_tls_probe(address, port, None, timeout, xver, False).get("sans", []))
+            address, initial = probe_addresses(None, False)
+            candidates = _non_wildcard_sans(initial.get("sans", []))
             if not candidates:
                 raise RealityError("sni")
             selected_sni = candidates[0]
-    result = _tls_probe(address, port, selected_sni, timeout, xver, True)
+    address, result = probe_addresses(selected_sni, True)
     if result.get("tls_version") != "TLSv1.3":
         raise RealityError("tls_version")
     if result.get("alpn") != "h2":

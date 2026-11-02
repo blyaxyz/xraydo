@@ -214,6 +214,44 @@ class RealityTests(unittest.TestCase):
         self.assertEqual(result["chain_size_bytes"], 4096)
         self.assertEqual(probe.call_args_list[1].args[2], "edge.example.test")
 
+    def test_scan_prefers_ipv4_when_ipv6_has_no_route(self) -> None:
+        verified = {
+            "tls_version": "TLSv1.3", "alpn": "h2", "curve": "X25519",
+            "sans": ["ya.ru"], "issuer": "CN=CA", "subject": "CN=ya.ru",
+            "not_after": "Jan 1 00:00:00 2030 GMT", "chain_certificates": 2,
+            "chain_size_bytes": 4096, "latency_ms": 12.3,
+        }
+        answers = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2a02:6b8::2:242", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("77.88.55.242", 443)),
+        ]
+        with mock.patch("socket.getaddrinfo", return_value=answers), mock.patch(
+            "xraydo.reality._tls_probe", return_value=verified
+        ) as probe:
+            result = scan_target("ya.ru", sni="ya.ru")
+        self.assertEqual(result["resolved_ip"], "77.88.55.242")
+        self.assertEqual(result["resolved_ips"], ["77.88.55.242", "2a02:6b8::2:242"])
+        self.assertEqual(probe.call_args.args[0], "77.88.55.242")
+
+    def test_scan_tries_next_resolved_address_after_tls_failure(self) -> None:
+        verified = {
+            "tls_version": "TLSv1.3", "alpn": "h2", "curve": "X25519",
+            "sans": ["ya.ru"], "issuer": "CN=CA", "subject": "CN=ya.ru",
+            "not_after": "Jan 1 00:00:00 2030 GMT", "chain_certificates": 2,
+            "chain_size_bytes": 4096, "latency_ms": 12.3,
+        }
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("5.255.255.242", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("77.88.55.242", 443)),
+        ]
+        with mock.patch("socket.getaddrinfo", return_value=answers), mock.patch(
+            "xraydo.reality._tls_probe",
+            side_effect=[RealityError("tls"), verified],
+        ) as probe:
+            result = scan_target("ya.ru", sni="ya.ru")
+        self.assertEqual(result["resolved_ip"], "77.88.55.242")
+        self.assertEqual(probe.call_count, 2)
+
     def test_proxy_protocol_v1_and_v2_use_socket_addresses(self) -> None:
         raw = mock.Mock()
         raw.getsockname.return_value = ("192.0.2.10", 12345)

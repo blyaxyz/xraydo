@@ -1504,6 +1504,26 @@ quiet_root() {
     fi
 }
 
+quiet_root_retry() {
+    local label="$1"
+    local attempts="$2"
+    local delay="$3"
+    shift 3
+    local diagnostics="$TEMP_DIR/diagnostics.log"
+    local attempt
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if root_exec "$@" >>"$diagnostics" 2>&1; then
+            return 0
+        fi
+        if ((attempt < attempts)); then
+            sleep "$delay"
+        fi
+    done
+    printf 'Warning: %s failed after %s attempts; details: %s\n' \
+        "$label" "$attempts" "$diagnostics" >&2
+    return 1
+}
+
 managed_leaf_matches_public_host() {
     local cert="$DATA_DIR/tls/leaf/current/server.crt"
     local key="$DATA_DIR/tls/leaf/current/server.key"
@@ -1706,7 +1726,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             root_exec rc-service xraydo-subscription restart >/dev/null
             root_exec rc-service xraydo-subscription status >/dev/null || fail "subscription service health-check failed"
         fi
-        subscription_curl=(curl --fail --silent --show-error --max-time 10 \
+        subscription_curl=(curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
             --noproxy '*' --output /dev/null)
         if [[ "$TLS_MODE" == "private-ca" ]]; then
             subscription_curl+=(--cacert "$DATA_DIR/tls/ca/current/ca.crt")
@@ -1714,7 +1734,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         subscription_probe=("${subscription_curl[@]}" \
             --resolve "$PUBLIC_HOST:$subscription_port:127.0.0.1" \
             "https://$url_host:$subscription_port/healthz")
-        quiet_root "subscription HTTPS protocol health-check" "${subscription_probe[@]}" || \
+        quiet_root_retry "subscription HTTPS protocol health-check" 12 1 \
+            "${subscription_probe[@]}" || \
             fail "subscription HTTPS protocol health-check failed"
         subscription_service_started=true
     fi
@@ -1726,7 +1747,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         if [[ "$subscription_service_started" == true ]]; then
             subscription_token_probe=("${subscription_curl[@]}" \
                 --resolve "$PUBLIC_HOST:$subscription_port:127.0.0.1" "$subscription_url")
-            quiet_root "subscription token protocol health-check" \
+            quiet_root_retry "subscription token protocol health-check" 12 1 \
                 "${subscription_token_probe[@]}" || fail "generated subscription URL returned an error"
         fi
         telemt_json="$TEMP_DIR/telemt-links.json"
