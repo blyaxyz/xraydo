@@ -819,6 +819,39 @@ next_free_port() {
     printf '%s' "$candidate"
 }
 
+next_free_port_excluding() {
+    local protocol="$1"
+    local candidate="$2"
+    shift 2
+    local reserved reserved_port
+    while true; do
+        reserved=false
+        for reserved_port in "$@"; do
+            if [[ "$candidate" == "$reserved_port" ]]; then
+                reserved=true
+                break
+            fi
+        done
+        if [[ "$reserved" == false ]] && ! port_in_use "$protocol" "$candidate"; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+        candidate=$((candidate + 1))
+        ((candidate <= 65535)) || fail "no free $protocol port found"
+    done
+}
+
+managed_service_active() {
+    local service="$1"
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        systemctl is-active --quiet "$service"
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "${service%.service}" status >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
 port_owner() {
     local port="$1"
     local owner=""
@@ -837,16 +870,16 @@ if port_in_use tcp 443; then
 fi
 xray_port="$(next_free_port tcp 443)"
 hysteria_port="$(next_free_port udp 1935)"
-if [[ "$TELEMT_ONLY" == true ]]; then
-    telemt_port="$TELEMT_PORT"
-    if port_in_use tcp "$telemt_port" && \
-        ! { command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet xraydo-telemt.service; }; then
-        fail "Telemt TCP port $telemt_port is occupied by $(port_owner "$telemt_port")"
-    fi
-else
-    telemt_port="$(next_free_port tcp "$TELEMT_PORT")"
+telemt_port="$TELEMT_PORT"
+if [[ ",$CORES," == *,telemt,* ]] && port_in_use tcp "$telemt_port" && \
+    ! managed_service_active xraydo-telemt.service; then
+    fail "Telemt TCP port $telemt_port is occupied by $(port_owner "$telemt_port"); choose another port explicitly"
 fi
-subscription_port="$(next_free_port tcp 8444)"
+if port_in_use tcp 8444 && managed_service_active xraydo-subscription.service; then
+    subscription_port=8444
+else
+    subscription_port="$(next_free_port_excluding tcp 8444 "$telemt_port" "$xray_port")"
+fi
 hysteria_stats_port="$(next_free_port tcp 9999)"
 telemt_api_port="$(next_free_port tcp 9091)"
 
@@ -1527,6 +1560,7 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
 fi
 
 first_user_created=false
+subscription_service_started=false
 subscription_token=""
 xray_state="not selected"
 hysteria_state="not selected"
@@ -1651,18 +1685,36 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         if [[ "$INIT_SYSTEM" == "systemd" ]]; then
             root_exec systemctl daemon-reload
             root_exec systemctl enable --now xraydo-subscription.service >/dev/null
+            root_exec systemctl restart xraydo-subscription.service >/dev/null
             root_exec systemctl is-active --quiet xraydo-subscription.service || fail "subscription service health-check failed"
         else
             root_exec rc-update add xraydo-subscription default >/dev/null
             root_exec rc-service xraydo-subscription restart >/dev/null
             root_exec rc-service xraydo-subscription status >/dev/null || fail "subscription service health-check failed"
         fi
+        subscription_curl=(curl --fail --silent --show-error --max-time 10 \
+            --noproxy '*' --output /dev/null)
+        if [[ "$TLS_MODE" == "private-ca" ]]; then
+            subscription_curl+=(--cacert "$DATA_DIR/tls/ca/current/ca.crt")
+        fi
+        subscription_probe=("${subscription_curl[@]}" \
+            --resolve "$PUBLIC_HOST:$subscription_port:127.0.0.1" \
+            "https://$url_host:$subscription_port/healthz")
+        quiet_root "subscription HTTPS protocol health-check" "${subscription_probe[@]}" || \
+            fail "subscription HTTPS protocol health-check failed"
+        subscription_service_started=true
     fi
 
     if [[ "$first_user_created" == true && "$TELEMT_ONLY" != true ]]; then
         token_file="$TEMP_DIR/subscription-token"
         (umask 077; printf '%s' "$subscription_token" >"$token_file")
         subscription_url="$subscription_base/sub/$subscription_token"
+        if [[ "$subscription_service_started" == true ]]; then
+            subscription_token_probe=("${subscription_curl[@]}" \
+                --resolve "$PUBLIC_HOST:$subscription_port:127.0.0.1" "$subscription_url")
+            quiet_root "subscription token protocol health-check" \
+                "${subscription_token_probe[@]}" || fail "generated subscription URL returned an error"
+        fi
         telemt_json="$TEMP_DIR/telemt-links.json"
         root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
         chmod 0600 "$telemt_json"

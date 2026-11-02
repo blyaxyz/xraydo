@@ -74,6 +74,10 @@ class SubscriptionServerTests(unittest.TestCase):
 
     def test_https_serves_subscription_and_rejects_invalid_token(self) -> None:
         context = ssl._create_unverified_context()
+        with urllib.request.urlopen(
+            f"https://127.0.0.1:{self.port}/healthz", context=context, timeout=5
+        ) as health:
+            self.assertEqual(health.status, 204)
         token = urllib.parse.quote(self.token, safe="")
         with urllib.request.urlopen(
             f"https://127.0.0.1:{self.port}/sub/{token}", context=context, timeout=5

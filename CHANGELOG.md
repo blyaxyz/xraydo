@@ -162,6 +162,10 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Fixed
 
+- Reinstalling no longer shifts an explicitly selected Telemt port when the
+  existing managed service owns it. Subscription allocation excludes planned
+  core ports, active units are restarted after unit changes, and the installer
+  requires a successful local HTTPS `/healthz` probe before showing links.
 - The standalone installer no longer requests the nonexistent Xray-core
   `v26.10.29` release. It pins the published `v26.10.31` amd64/arm64 artifacts,
   verifies their official SHA-256 digests, reports the failed URL clearly, and

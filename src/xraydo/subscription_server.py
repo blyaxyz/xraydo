@@ -156,7 +156,10 @@ class SubscriptionHandler(socketserver.BaseRequestHandler):
     server: SubscriptionTCPServer
 
     def _response(self, status: int, body: bytes = b"") -> None:
-        reasons = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 414: "URI Too Long"}
+        reasons = {
+            200: "OK", 204: "No Content", 400: "Bad Request",
+            404: "Not Found", 405: "Method Not Allowed", 414: "URI Too Long",
+        }
         headers = [
             f"HTTP/1.1 {status} {reasons[status]}",
             "Content-Type: text/plain; charset=utf-8",
@@ -197,6 +200,9 @@ class SubscriptionHandler(socketserver.BaseRequestHandler):
             self._response(400)
             return
         parsed = urllib.parse.urlsplit(target)
+        if not parsed.query and not parsed.fragment and parsed.path == "/healthz":
+            self._response(204)
+            return
         if parsed.query or parsed.fragment or not parsed.path.startswith("/sub/"):
             self._response(404)
             return
