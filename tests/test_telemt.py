@@ -23,6 +23,7 @@ class TelemtTests(unittest.TestCase):
         self.assertIn("classic = false", config)
         self.assertIn("secure = false", config)
         self.assertIn("tls = true", config)
+        self.assertIn("direct_relay_copy_buf_s2c_bytes = 16384", config)
         self.assertIn('listen = "127.0.0.1:9091"', config)
         self.assertIn('whitelist = ["127.0.0.1/32", "::1/128"]', config)
         self.assertNotIn("auth_header", config)

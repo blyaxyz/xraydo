@@ -74,6 +74,7 @@ def build_config(
     mask_target = mask_host or tls_domain
     return f"""[general]
 use_middle_proxy = {str(use_middle_proxy).lower()}
+direct_relay_copy_buf_s2c_bytes = 16384
 log_level = "normal"
 {ad_tag_line}
 

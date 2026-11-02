@@ -131,10 +131,10 @@ def _hysteria_protocol(config: Path) -> dict[str, Any]:
 
 
 def _telemt_protocol(binary: str, config: Path) -> dict[str, Any]:
-    result = _run([binary, "healthcheck", str(config), "--mode", "liveness"])
+    result = _run([binary, "healthcheck", str(config), "--mode", "ready"])
     if result is not None and result.returncode == 0:
-        return {"state": "healthy", "check": "native-liveness"}
-    return {"state": "failed", "check": "native-liveness", "detail": "telemt_liveness_failed"}
+        return {"state": "healthy", "check": "native-readiness"}
+    return {"state": "failed", "check": "native-readiness", "detail": "telemt_readiness_failed"}
 
 
 def _protocol_health(core: str, binary: str, config: Path, service_state: str) -> dict[str, Any]:

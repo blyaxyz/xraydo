@@ -71,13 +71,14 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "secret")
         self.assertEqual(request.full_url, "http://127.0.0.1:9999/traffic")
 
-    def test_telemt_protocol_uses_native_liveness(self) -> None:
+    def test_telemt_protocol_uses_native_readiness(self) -> None:
         config = Path("/etc/xraydo/cores/telemt/telemt.toml")
         with mock.patch("xraydo.health._run", return_value=completed([])) as run:
             result = _telemt_protocol("/usr/bin/telemt", config)
         self.assertEqual(result["state"], "healthy")
+        self.assertEqual(result["check"], "native-readiness")
         run.assert_called_once_with([
-            "/usr/bin/telemt", "healthcheck", str(config), "--mode", "liveness"
+            "/usr/bin/telemt", "healthcheck", str(config), "--mode", "ready"
         ])
 
     def test_core_health_preserves_systemd_restart_state(self) -> None:
