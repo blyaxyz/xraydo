@@ -1680,6 +1680,20 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         fi
     fi
 
+    if [[ "$TELEMT_ONLY" == true ]]; then
+        quiet_root "disable standard subscription URL for Telemt-only" \
+            "$BINARY_PATH" --json settings subscription-url off || \
+            fail "cannot disable the standard subscription URL for Telemt-only"
+        if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" == "systemd" ]] && \
+            root_exec systemctl cat xraydo-subscription.service >/dev/null 2>&1; then
+            root_exec systemctl disable --now xraydo-subscription.service >/dev/null
+        elif [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" == "openrc" ]] && \
+            [[ -e /etc/init.d/xraydo-subscription ]]; then
+            root_exec rc-service xraydo-subscription stop >/dev/null 2>&1 || true
+            root_exec rc-update del xraydo-subscription default >/dev/null 2>&1 || true
+        fi
+    fi
+
     if [[ "$TELEMT_ONLY" != true && "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
         provision_subscription_service
         if [[ "$INIT_SYSTEM" == "systemd" ]]; then
