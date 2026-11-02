@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'printf "installer test failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xraydo-installer-test.XXXXXX")"
