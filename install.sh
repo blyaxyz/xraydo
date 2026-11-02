@@ -40,8 +40,8 @@ set -Eeuo pipefail
 # This file is intentionally self-contained. It can be downloaded on its own;
 # no checkout of the repository is required.
 readonly INSTALLER_VERSION="0.2.0"
-readonly XRAYDO_REF="b3cea5cd8139ea3639990f89a199131084655406"
-readonly XRAYDO_ARCHIVE_SHA256="22d4b3abfd109712acecd0976fc3d0137b39ad29cad58b352d447fb847f89d9d"
+readonly XRAYDO_REF="c9296ee278ade6638aca954f3aa9d709f6710903"
+readonly XRAYDO_ARCHIVE_SHA256="949139d889d7720a914c8f183b31b7be2cf26cb035d9577fd0f1f79b1956301e"
 readonly XRAYDO_ARCHIVE_URL="https://github.com/blyaxyz/xraydo/archive/${XRAYDO_REF}.tar.gz"
 readonly XRAY_VERSION="v26.10.31"
 readonly HYSTERIA_VERSION="app/v2.13.0"
