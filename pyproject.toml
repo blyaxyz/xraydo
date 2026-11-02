@@ -2,7 +2,7 @@
 name = "own-xray"
 version = "0.1.0"
 description = "Terminal-first Xray management panel"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["PyYAML>=6.0"]
 
@@ -14,7 +14,7 @@ xraydo = ["locales/*.json", "data/*.json"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

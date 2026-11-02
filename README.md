@@ -1,8 +1,8 @@
 # xraydo
 
 `xraydo` — интерактивная панель и CLI для установки и управления Xray,
-Hysteria 2 и Telemt на Linux-сервере. Проект работает как на одном сервере,
-так и в схеме master → node.
+Hysteria 2 и Telemt на актуальных Debian и Ubuntu Server. Проект работает как
+на одном сервере, так и в схеме master → node.
 
 - мастер установки на русском и английском;
 - единое меню для пользователей, ключей, TLS, обновления и удаления;
@@ -25,7 +25,7 @@ wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/m
 
 ```
 Установщик проверит окружение, доставит зависимости, установит выбранные ядра,
-создаст systemd/OpenRC-службы и откроет меню `xraydo`.
+создаст systemd-службы и откроет меню `xraydo`.
 
 ## Что выбрать в установщике
 
@@ -231,4 +231,4 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 bash tests/test_install.sh
 ```
 План работ: [TODO.md](TODO.md). История изменений: [CHANGELOG.md](CHANGELOG.md).
-Поддерживаемые Linux-системы: [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
+Поддерживаемые Debian/Ubuntu: [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).

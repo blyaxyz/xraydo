@@ -2,19 +2,11 @@
   "schema": 1,
   "architectures": ["linux/amd64", "linux/arm64"],
   "distributions": [
-    {"tier": 1, "name": "Ubuntu Server 22.04", "image": "ubuntu:22.04"},
-    {"tier": 1, "name": "Ubuntu Server 24.04", "image": "ubuntu:24.04"},
-    {"tier": 1, "name": "Ubuntu Server 26.04", "image": "ubuntu:26.04"},
-    {"tier": 1, "name": "Debian 12", "image": "debian:12"},
-    {"tier": 1, "name": "Debian 13", "image": "debian:13"},
-    {"tier": 1, "name": "AlmaLinux 8", "image": "almalinux:8"},
-    {"tier": 1, "name": "AlmaLinux 9", "image": "almalinux:9"},
-    {"tier": 1, "name": "AlmaLinux 10", "image": "almalinux:10"},
-    {"tier": 1, "name": "Rocky Linux 8", "image": "rockylinux:8"},
-    {"tier": 1, "name": "Rocky Linux 9", "image": "rockylinux:9"},
-    {"tier": 1, "name": "Rocky Linux 10", "image": "rockylinux:10"},
-    {"tier": 2, "name": "Alpine 3.20", "image": "alpine:3.20"},
-    {"tier": 2, "name": "Alpine 3.21", "image": "alpine:3.21"},
-    {"tier": 2, "name": "openSUSE Leap 15.6", "image": "opensuse/leap:15.6"}
+    {"name": "Ubuntu Server 26.10", "image": "ubuntu:26.10", "channel": "current"},
+    {"name": "Ubuntu Server 26.04 LTS", "image": "ubuntu:26.04", "channel": "lts"},
+    {"name": "Ubuntu Server 24.04 LTS", "image": "ubuntu:24.04", "channel": "lts"},
+    {"name": "Ubuntu Server 22.04 LTS", "image": "ubuntu:22.04", "channel": "lts"},
+    {"name": "Debian 13 stable", "image": "debian:13", "channel": "stable"},
+    {"name": "Debian 12 LTS", "image": "debian:12", "channel": "lts"}
   ]
 }

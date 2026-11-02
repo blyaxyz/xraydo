@@ -20,6 +20,7 @@ jobs:
           bash -n install.sh
           ./install.sh --version
           ./install.sh --dry-run --non-interactive
+          bash scripts/check_release_assets.sh
       - name: Build commit-pinned source payload
         run: |
           mkdir -p "release-root/xraydo-$GITHUB_SHA"

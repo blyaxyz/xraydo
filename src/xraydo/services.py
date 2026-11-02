@@ -29,8 +29,6 @@ def _run(command: Sequence[str], timeout: int = 30) -> subprocess.CompletedProce
 def init_system() -> str:
     if shutil.which("systemctl") and Path("/run/systemd/system").is_dir():
         return "systemd"
-    if shutil.which("rc-service"):
-        return "openrc"
     raise CoreServiceError("service_manager_missing")
 
 
@@ -45,8 +43,7 @@ def control_service(core: str, action: str) -> dict[str, str]:
         raise CoreServiceError("service_invalid_action")
     manager = init_system()
     service = _service_name(core)
-    command = ["systemctl", action, service] if manager == "systemd" else ["rc-service", service, action]
-    result = _run(command)
+    result = _run(["systemctl", action, service])
     if result.returncode != 0:
         if os.geteuid() != 0:
             raise CoreServiceError("service_permission_denied")
@@ -66,46 +63,28 @@ def _parse_properties(output: str) -> dict[str, str]:
 def service_status(core: str) -> dict[str, Any]:
     manager = init_system()
     service = _service_name(core)
-    if manager == "systemd":
-        result = _run(
-            [
-                "systemctl",
-                "show",
-                service,
-                "--no-page",
-                "--property=LoadState,ActiveState,SubState,MainPID,NRestarts,ExecMainStartTimestamp",
-            ]
-        )
-        properties = _parse_properties(result.stdout)
-        if result.returncode != 0 or properties.get("LoadState") == "not-found":
-            raise CoreServiceError("service_not_installed")
-        active = properties.get("ActiveState", "unknown")
-        return {
-            "core": core,
-            "service": service,
-            "manager": manager,
-            "state": active,
-            "substate": properties.get("SubState", "unknown"),
-            "pid": int(properties.get("MainPID", "0") or 0),
-            "restarts": int(properties.get("NRestarts", "0") or 0),
-            "started_at": properties.get("ExecMainStartTimestamp") or None,
-        }
-
-    result = _run(["rc-service", service, "status"])
-    output = (result.stdout or result.stderr).strip()
-    lowered = output.casefold()
-    missing = "does not exist" in lowered or "not found" in lowered
-    if missing:
+    result = _run(
+        [
+            "systemctl",
+            "show",
+            service,
+            "--no-page",
+            "--property=LoadState,ActiveState,SubState,MainPID,NRestarts,ExecMainStartTimestamp",
+        ]
+    )
+    properties = _parse_properties(result.stdout)
+    if result.returncode != 0 or properties.get("LoadState") == "not-found":
         raise CoreServiceError("service_not_installed")
+    active = properties.get("ActiveState", "unknown")
     return {
         "core": core,
         "service": service,
         "manager": manager,
-        "state": "active" if result.returncode == 0 else "inactive",
-        "substate": "running" if result.returncode == 0 else "stopped",
-        "pid": None,
-        "restarts": None,
-        "started_at": None,
+        "state": active,
+        "substate": properties.get("SubState", "unknown"),
+        "pid": int(properties.get("MainPID", "0") or 0),
+        "restarts": int(properties.get("NRestarts", "0") or 0),
+        "started_at": properties.get("ExecMainStartTimestamp") or None,
     }
 
 
@@ -114,26 +93,10 @@ def service_logs(core: str, lines: int = 100) -> dict[str, Any]:
         raise CoreServiceError("service_invalid_lines")
     manager = init_system()
     service = _service_name(core)
-    if manager == "systemd":
-        result = _run(["journalctl", "--unit", service, "--no-pager", "--lines", str(lines)])
-        if result.returncode != 0:
-            raise CoreServiceError("service_logs_failed")
-        output = result.stdout
-    else:
-        log_file = Path(f"/var/log/{service}.log")
-        if log_file.is_file():
-            try:
-                output = "\n".join(log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
-            except OSError as error:
-                raise CoreServiceError("service_logs_failed") from error
-        elif shutil.which("logread"):
-            result = _run(["logread"])
-            if result.returncode != 0:
-                raise CoreServiceError("service_logs_failed")
-            matching = [line for line in result.stdout.splitlines() if service in line or core in line]
-            output = "\n".join(matching[-lines:])
-        else:
-            raise CoreServiceError("service_logs_unavailable")
+    result = _run(["journalctl", "--unit", service, "--no-pager", "--lines", str(lines)])
+    if result.returncode != 0:
+        raise CoreServiceError("service_logs_failed")
+    output = result.stdout
     return {"core": core, "service": service, "manager": manager, "lines": lines, "logs": output.rstrip()}
 
 

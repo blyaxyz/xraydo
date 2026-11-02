@@ -29,9 +29,7 @@ RELEASE_API = "https://api.github.com/repos/telemt/telemt/releases"
 RUST_VERSION = (1, 88)
 TARGETS = {
     ("x86_64", "gnu"): "x86_64-unknown-linux-gnu",
-    ("x86_64", "musl"): "x86_64-unknown-linux-musl",
     ("aarch64", "gnu"): "aarch64-unknown-linux-gnu",
-    ("aarch64", "musl"): "aarch64-unknown-linux-musl",
 }
 
 
@@ -79,7 +77,8 @@ def _download(url: str, destination: Path) -> None:
 
 def _libc() -> str:
     name, _version = platform.libc_ver()
-    return "musl" if name.casefold() == "musl" or Path("/etc/alpine-release").exists() else "gnu"
+    normalized = name.casefold()
+    return "gnu" if normalized in {"glibc", "gnu libc"} else normalized or "unknown"
 
 
 def platform_capabilities() -> dict[str, Any]:

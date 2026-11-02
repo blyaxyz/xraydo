@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# Minimal POSIX bootstrap for distributions such as Alpine that do not include
-# Bash in the base image. All installer logic below this block runs in Bash.
+# Minimal POSIX bootstrap for supported Debian/Ubuntu images without Bash.
+# All installer logic below this block runs in Bash.
 if [ -z "${BASH_VERSION:-}" ]; then
     if command -v bash >/dev/null 2>&1; then
         exec bash "$0" "$@"
@@ -17,19 +17,11 @@ if [ -z "${BASH_VERSION:-}" ]; then
     fi
 
     echo "Installing Bash / Установка Bash..."
-    if command -v apk >/dev/null 2>&1; then
-        $BOOTSTRAP_ROOT apk add --no-cache bash
-    elif command -v apt-get >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
         $BOOTSTRAP_ROOT apt-get update
         $BOOTSTRAP_ROOT apt-get install -y --no-install-recommends bash
-    elif command -v dnf >/dev/null 2>&1; then
-        $BOOTSTRAP_ROOT dnf install -y bash
-    elif command -v yum >/dev/null 2>&1; then
-        $BOOTSTRAP_ROOT yum install -y bash
-    elif command -v zypper >/dev/null 2>&1; then
-        $BOOTSTRAP_ROOT zypper --non-interactive install --no-recommends bash
     else
-        echo "Cannot install Bash: supported package manager not found." >&2
+        echo "Bash bootstrap requires a supported Debian or Ubuntu release." >&2
         exit 2
     fi
     exec bash "$0" "$@"
@@ -333,16 +325,9 @@ remove_service_units() {
             root_exec systemctl disable --now "$service.service" >/dev/null 2>&1 || true
         done
     fi
-    if command -v rc-service >/dev/null 2>&1; then
-        for service in "${services[@]}"; do
-            root_exec rc-service "$service" stop >/dev/null 2>&1 || true
-            root_exec rc-update del "$service" default >/dev/null 2>&1 || true
-        done
-    fi
     for service in "${services[@]}"; do
         root_exec rm -f -- "/etc/systemd/system/$service.service" \
-            "/etc/systemd/system/multi-user.target.wants/$service.service" \
-            "/etc/init.d/$service"
+            "/etc/systemd/system/multi-user.target.wants/$service.service"
     done
     if command -v systemctl >/dev/null 2>&1; then
         root_exec systemctl daemon-reload >/dev/null 2>&1 || true
@@ -449,7 +434,8 @@ case "$(uname -m)" in
     *) fail "unsupported architecture: $(uname -m)" ;;
 esac
 
-if [[ -r /etc/os-release ]]; then
+OS_RELEASE_FILE="${XRAYDO_OS_RELEASE:-/etc/os-release}"
+if [[ -r "$OS_RELEASE_FILE" ]]; then
     while IFS='=' read -r key value; do
         value="${value%\"}"
         value="${value#\"}"
@@ -457,16 +443,16 @@ if [[ -r /etc/os-release ]]; then
             ID) OS_ID="$value" ;;
             VERSION_ID) OS_VERSION="$value" ;;
         esac
-    done < /etc/os-release
+    done < "$OS_RELEASE_FILE"
 fi
 
-for candidate in apt-get dnf yum zypper apk; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        PACKAGE_MANAGER="$candidate"
-        break
-    fi
-done
-[[ -n "$PACKAGE_MANAGER" ]] || fail "supported package manager not found (apt, dnf, yum, zypper, apk)"
+case "$OS_ID:$OS_VERSION" in
+    debian:12|debian:13|ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|ubuntu:26.10) ;;
+    *) fail "unsupported system $OS_ID $OS_VERSION; use Debian 12/13 or Ubuntu 22.04/24.04/26.04/26.10" ;;
+esac
+
+command -v apt-get >/dev/null 2>&1 || fail "apt-get is required on supported Debian and Ubuntu releases"
+PACKAGE_MANAGER="apt-get"
 
 if [[ -z "$PROFILE" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
     while true; do
@@ -719,23 +705,10 @@ fi
 
 declare -a REQUIRED_PACKAGES=()
 command -v python3 >/dev/null 2>&1 || REQUIRED_PACKAGES+=(python3)
-if ! python3 -c 'import yaml' >/dev/null 2>&1; then
-    case "$PACKAGE_MANAGER" in
-        apt-get) REQUIRED_PACKAGES+=(python3-yaml) ;;
-        dnf|yum) REQUIRED_PACKAGES+=(python3-pyyaml) ;;
-        zypper) REQUIRED_PACKAGES+=(python3-PyYAML) ;;
-        apk) REQUIRED_PACKAGES+=(py3-yaml) ;;
-    esac
-fi
+python3 -c 'import yaml' >/dev/null 2>&1 || REQUIRED_PACKAGES+=(python3-yaml)
 command -v curl >/dev/null 2>&1 || REQUIRED_PACKAGES+=(curl)
 command -v tar >/dev/null 2>&1 || REQUIRED_PACKAGES+=(tar)
-if ! command -v qrencode >/dev/null 2>&1; then
-    if [[ "$PACKAGE_MANAGER" == "apk" ]]; then
-        REQUIRED_PACKAGES+=(libqrencode-tools)
-    else
-        REQUIRED_PACKAGES+=(qrencode)
-    fi
-fi
+command -v qrencode >/dev/null 2>&1 || REQUIRED_PACKAGES+=(qrencode)
 if ! command -v openssl >/dev/null 2>&1; then
     REQUIRED_PACKAGES+=(openssl)
 fi
@@ -763,7 +736,6 @@ CERTBOT_PATH="$(command -v certbot 2>/dev/null || true)"
 if [[ "$TLS_MODE" == "domain" && -z "$CERTBOT_PATH" ]]; then
     REQUIRED_PACKAGES+=(certbot)
 elif [[ "$TLS_MODE" == "public-ip" ]] && ! certbot_ip_capable "${CERTBOT_PATH:-certbot}"; then
-    [[ "$PACKAGE_MANAGER" != "apk" ]] || fail "public IP certificates require Certbot 5.4+; snap is unavailable on Alpine"
     command -v snap >/dev/null 2>&1 || REQUIRED_PACKAGES+=(snapd)
 fi
 
@@ -774,8 +746,6 @@ fi
 
 if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     INIT_SYSTEM="systemd"
-elif command -v rc-service >/dev/null 2>&1; then
-    INIT_SYSTEM="openrc"
 fi
 
 security_modules="none"
@@ -864,8 +834,6 @@ managed_service_active() {
     local service="$1"
     if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         systemctl is-active --quiet "$service"
-    elif command -v rc-service >/dev/null 2>&1; then
-        rc-service "${service%.service}" status >/dev/null 2>&1
     else
         return 1
     fi
@@ -956,6 +924,8 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
+[[ "$INIT_SYSTEM" == "systemd" ]] || fail "systemd must be active on supported Debian and Ubuntu servers"
+
 if [[ "$ASSUME_YES" != true ]]; then
     [[ "$NON_INTERACTIVE" != true && -t 0 ]] || fail "use --yes with --non-interactive"
     read -r -p "$CONFIRM_TEXT" confirmation
@@ -993,20 +963,9 @@ packages_apt() {
     root_exec env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${REQUIRED_PACKAGES[@]}"
 }
 
-packages_dnf() { root_exec dnf install -y "${REQUIRED_PACKAGES[@]}"; }
-packages_yum() { root_exec yum install -y "${REQUIRED_PACKAGES[@]}"; }
-packages_zypper() { root_exec zypper --non-interactive install --no-recommends "${REQUIRED_PACKAGES[@]}"; }
-packages_apk() { root_exec apk add --no-cache "${REQUIRED_PACKAGES[@]}"; }
-
 install_system_packages() {
     ((${#REQUIRED_PACKAGES[@]})) || return 0
-    case "$PACKAGE_MANAGER" in
-        apt-get) packages_apt ;;
-        dnf) packages_dnf ;;
-        yum) packages_yum ;;
-        zypper) packages_zypper ;;
-        apk) packages_apk ;;
-    esac
+    packages_apt
 }
 
 install_system_packages
@@ -1027,7 +986,6 @@ ensure_certbot() {
         CERTBOT_PATH="$(command -v "${CERTBOT_PATH:-certbot}")"
         return 0
     fi
-    [[ "$INIT_SYSTEM" == "systemd" ]] || fail "Certbot 5.4+ IP certificates require systemd/snap on this platform"
     command -v snap >/dev/null 2>&1 || fail "snapd is unavailable after package installation"
     root_exec systemctl enable --now snapd.socket >/dev/null
     root_exec snap wait system seed.loaded
@@ -1205,19 +1163,14 @@ if [[ ",$CORES," == *,hysteria,* ]]; then
 fi
 
 if [[ ",$CORES," == *,telemt,* ]]; then
-    if ldd --version 2>&1 | grep -qi musl || ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; then
-        telemt_libc="musl"
-    else
-        telemt_libc="gnu"
-    fi
     if [[ "$ARCH" == "amd64" ]]; then
         telemt_arch="x86_64"
-        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="e6f46b2f3becf29bfd555cec8a059e429f7c082c1af402499b3a7940cf8ebd34" || telemt_checksum="05d7c32eff5990285657408cf383614d845ecc06aac0d5adc02a86d72c907146"
+        telemt_checksum="e6f46b2f3becf29bfd555cec8a059e429f7c082c1af402499b3a7940cf8ebd34"
     else
         telemt_arch="aarch64"
-        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="1e1bc87f05923b9673cbbaf34a3e50f7fdcf7d496cd24efcdb34c278ed18a659" || telemt_checksum="33d7b2aa55f8852ddcc59e0fa8f5ad9bca3ce94d9fea6665b918e9ae91820ae3"
+        telemt_checksum="1e1bc87f05923b9673cbbaf34a3e50f7fdcf7d496cd24efcdb34c278ed18a659"
     fi
-    telemt_asset="telemt-$telemt_arch-linux-$telemt_libc.tar.gz"
+    telemt_asset="telemt-$telemt_arch-linux-gnu.tar.gz"
     telemt_archive="$TEMP_DIR/$telemt_asset"
     download_verified "https://github.com/telemt/telemt/releases/download/$TELEMT_VERSION/$telemt_asset" "$telemt_archive" "$telemt_checksum"
     telemt_extract="$TEMP_DIR/telemt"
@@ -1290,32 +1243,6 @@ EOF
     root_exec install -m 0644 "$unit" "/etc/systemd/system/xraydo-$core.service"
 }
 
-write_openrc_unit() {
-    local core="$1"
-    local user="$2"
-    local command_path="$3"
-    local command_args="$4"
-    local config_file="$5"
-    local service="$TEMP_DIR/xraydo-$core"
-    cat > "$service" <<EOF
-#!/sbin/openrc-run
-name="xraydo $core"
-command="$command_path"
-command_args="$command_args"
-command_user="$user:$user"
-directory="$data_dir"
-command_background=true
-pidfile="/run/xraydo-$core.pid"
-required_files="$config_file"
-
-depend() {
-    need net
-    after firewall
-}
-EOF
-    root_exec install -m 0755 "$service" "/etc/init.d/xraydo-$core"
-}
-
 provision_core_service() {
     local core="$1"
     local binary="$2"
@@ -1331,28 +1258,20 @@ provision_core_service() {
     root_exec install -d -m 0750 -o "$user" -g "$user" "$data_dir"
     root_exec install -d -m 0750 -o "$user" -g "$user" "/var/log/xraydo/$core"
 
-    case "$INIT_SYSTEM" in
-        systemd) write_systemd_unit "$core" "$user" "$binary $args" "$config_file" "$data_dir" ;;
-        openrc) write_openrc_unit "$core" "$user" "$binary" "$args" "$config_file" ;;
-    esac
+    write_systemd_unit "$core" "$user" "$binary $args" "$config_file" "$data_dir"
 }
 
 enable_core_autostart() {
     local core="$1"
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        root_exec systemctl enable "xraydo-$core.service" >/dev/null
-        root_exec systemctl is-enabled --quiet "xraydo-$core.service"
-    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        root_exec rc-update add "xraydo-$core" default >/dev/null
-    fi
+    root_exec systemctl enable "xraydo-$core.service" >/dev/null
+    root_exec systemctl is-enabled --quiet "xraydo-$core.service"
 }
 
 provision_tls_renewer() {
     root_exec install -d -m 0755 /var/lib/xraydo
     root_exec install -d -m 0750 /var/log/xraydo/tls-renew
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        local unit="$TEMP_DIR/xraydo-tls-renew.service"
-        cat > "$unit" <<EOF
+    local unit="$TEMP_DIR/xraydo-tls-renew.service"
+    cat > "$unit" <<EOF
 [Unit]
 Description=xraydo subscription TLS renewal agent
 After=network-online.target
@@ -1377,27 +1296,7 @@ CapabilityBoundingSet=
 [Install]
 WantedBy=multi-user.target
 EOF
-        root_exec install -m 0644 "$unit" /etc/systemd/system/xraydo-tls-renew.service
-    else
-        local service="$TEMP_DIR/xraydo-tls-renew"
-        cat > "$service" <<EOF
-#!/sbin/openrc-run
-name="xraydo TLS renewal agent"
-command="$PREFIX/bin/xraydo"
-command_args="tls renew-daemon --interval 3600 --jitter 300"
-directory="/var/lib/xraydo"
-command_background=true
-pidfile="/run/xraydo-tls-renew.pid"
-output_log="/var/log/xraydo/tls-renew/output.log"
-error_log="/var/log/xraydo/tls-renew/error.log"
-
-depend() {
-    need localmount
-    after net
-}
-EOF
-        root_exec install -m 0755 "$service" /etc/init.d/xraydo-tls-renew
-    fi
+    root_exec install -m 0644 "$unit" /etc/systemd/system/xraydo-tls-renew.service
 }
 
 provision_certbot_renewer() {
@@ -1413,20 +1312,14 @@ if [ -d '$CONFIG_DIR/cores/hysteria/pki' ]; then
     install -m 0644 '$cert' '$CONFIG_DIR/cores/hysteria/pki/server.crt'
     install -m 0640 '$key' '$CONFIG_DIR/cores/hysteria/pki/server.key'
 fi
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl try-restart xraydo-subscription.service >/dev/null 2>&1 || true
-    systemctl try-restart xraydo-hysteria.service >/dev/null 2>&1 || true
-elif command -v rc-service >/dev/null 2>&1; then
-    rc-service xraydo-subscription restart >/dev/null 2>&1 || true
-    rc-service xraydo-hysteria restart >/dev/null 2>&1 || true
-fi
+systemctl try-restart xraydo-subscription.service >/dev/null 2>&1 || true
+systemctl try-restart xraydo-hysteria.service >/dev/null 2>&1 || true
 EOF
     root_exec install -d -m 0755 "$hook_dir"
     root_exec install -m 0755 "$hook" "$hook_dir/xraydo"
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        local service="$TEMP_DIR/xraydo-certbot-renew.service"
-        local timer="$TEMP_DIR/xraydo-certbot-renew.timer"
-        cat > "$service" <<EOF
+    local service="$TEMP_DIR/xraydo-certbot-renew.service"
+    local timer="$TEMP_DIR/xraydo-certbot-renew.timer"
+    cat > "$service" <<EOF
 [Unit]
 Description=Renew xraydo Let's Encrypt certificate with Certbot
 After=network-online.target
@@ -1436,7 +1329,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$CERTBOT_PATH renew --cert-name xraydo-subscription --quiet
 EOF
-        cat > "$timer" <<'EOF'
+    cat > "$timer" <<'EOF'
 [Unit]
 Description=Twice-daily xraydo Certbot renewal check
 
@@ -1448,25 +1341,15 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-        root_exec install -m 0644 "$service" /etc/systemd/system/xraydo-certbot-renew.service
-        root_exec install -m 0644 "$timer" /etc/systemd/system/xraydo-certbot-renew.timer
-    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        local cron="$TEMP_DIR/xraydo-certbot-renew"
-        cat > "$cron" <<EOF
-#!/bin/sh
-$CERTBOT_PATH renew --cert-name xraydo-subscription --quiet
-EOF
-        root_exec install -d -m 0755 /etc/periodic/12hourly
-        root_exec install -m 0755 "$cron" /etc/periodic/12hourly/xraydo-certbot-renew
-    fi
+    root_exec install -m 0644 "$service" /etc/systemd/system/xraydo-certbot-renew.service
+    root_exec install -m 0644 "$timer" /etc/systemd/system/xraydo-certbot-renew.timer
 }
 
 provision_subscription_service() {
     local cert="$DATA_DIR/tls/leaf/current/server.crt"
     local key="$DATA_DIR/tls/leaf/current/server.key"
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        local unit="$TEMP_DIR/xraydo-subscription.service"
-        cat > "$unit" <<EOF
+    local unit="$TEMP_DIR/xraydo-subscription.service"
+    cat > "$unit" <<EOF
 [Unit]
 Description=xraydo HTTPS subscription service
 After=network-online.target
@@ -1492,40 +1375,14 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-        root_exec install -m 0644 "$unit" /etc/systemd/system/xraydo-subscription.service
-    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        local service="$TEMP_DIR/xraydo-subscription"
-        cat > "$service" <<EOF
-#!/sbin/openrc-run
-name="xraydo HTTPS subscription service"
-command="$BINARY_PATH"
-command_args="subscription serve --https-only --listen 0.0.0.0 --port $subscription_port --public-host $PUBLIC_HOST --cert $cert --key $key"
-directory="$DATA_DIR"
-command_background=true
-pidfile="/run/xraydo-subscription.pid"
-
-depend() {
-    need net
-}
-EOF
-        root_exec install -m 0755 "$service" /etc/init.d/xraydo-subscription
-    fi
+    root_exec install -m 0644 "$unit" /etc/systemd/system/xraydo-subscription.service
 }
 
 start_core_service() {
     local core="$1"
     [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]] || return 0
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        root_exec systemctl restart "xraydo-$core.service" >/dev/null
-        root_exec systemctl is-active --quiet "xraydo-$core.service" || return 1
-    else
-        if root_exec rc-service "xraydo-$core" status >/dev/null 2>&1; then
-            root_exec rc-service "xraydo-$core" restart >/dev/null
-        else
-            root_exec rc-service "xraydo-$core" start >/dev/null
-        fi
-        root_exec rc-service "xraydo-$core" status >/dev/null || return 1
-    fi
+    root_exec systemctl restart "xraydo-$core.service" >/dev/null
+    root_exec systemctl is-active --quiet "xraydo-$core.service" || return 1
     local attempt report="$TEMP_DIR/$core-protocol-health.json"
     for attempt in {1..30}; do
         if root_exec env XRAYDO_CONFIG="$CONFIG_DIR/config.json" \
@@ -1611,25 +1468,15 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
             provision_certbot_renewer
         fi
     fi
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        root_exec systemctl daemon-reload
-        [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
-        [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
-        [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        if [[ "$TELEMT_ONLY" != true ]]; then
-            if [[ "$TLS_MODE" == "private-ca" ]]; then
-                root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
-            else
-                root_exec systemctl enable --now xraydo-certbot-renew.timer >/dev/null
-            fi
-        fi
-    else
-        [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
-        [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
-        [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
-        if [[ "$TELEMT_ONLY" != true && "$TLS_MODE" == "private-ca" ]]; then
-            root_exec rc-update add xraydo-tls-renew default >/dev/null
-            root_exec rc-service xraydo-tls-renew start >/dev/null
+    root_exec systemctl daemon-reload
+    [[ ",$CORES," == *,xray,* ]] && enable_core_autostart xray
+    [[ ",$CORES," == *,hysteria,* ]] && enable_core_autostart hysteria
+    [[ ",$CORES," == *,telemt,* ]] && enable_core_autostart telemt
+    if [[ "$TELEMT_ONLY" != true ]]; then
+        if [[ "$TLS_MODE" == "private-ca" ]]; then
+            root_exec systemctl enable --now xraydo-tls-renew.service >/dev/null
+        else
+            root_exec systemctl enable --now xraydo-certbot-renew.timer >/dev/null
         fi
     fi
 fi
@@ -1776,28 +1623,18 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         quiet_root "disable standard subscription URL for Telemt-only" \
             "$BINARY_PATH" --json settings subscription-url off || \
             fail "cannot disable the standard subscription URL for Telemt-only"
-        if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" == "systemd" ]] && \
+        if [[ "$PREFIX" == "/usr/local" ]] && \
             root_exec systemctl cat xraydo-subscription.service >/dev/null 2>&1; then
             root_exec systemctl disable --now xraydo-subscription.service >/dev/null
-        elif [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" == "openrc" ]] && \
-            [[ -e /etc/init.d/xraydo-subscription ]]; then
-            root_exec rc-service xraydo-subscription stop >/dev/null 2>&1 || true
-            root_exec rc-update del xraydo-subscription default >/dev/null 2>&1 || true
         fi
     fi
 
     if [[ "$TELEMT_ONLY" != true && "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
         provision_subscription_service
-        if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-            root_exec systemctl daemon-reload
-            root_exec systemctl enable --now xraydo-subscription.service >/dev/null
-            root_exec systemctl restart xraydo-subscription.service >/dev/null
-            root_exec systemctl is-active --quiet xraydo-subscription.service || fail "subscription service health-check failed"
-        else
-            root_exec rc-update add xraydo-subscription default >/dev/null
-            root_exec rc-service xraydo-subscription restart >/dev/null
-            root_exec rc-service xraydo-subscription status >/dev/null || fail "subscription service health-check failed"
-        fi
+        root_exec systemctl daemon-reload
+        root_exec systemctl enable --now xraydo-subscription.service >/dev/null
+        root_exec systemctl restart xraydo-subscription.service >/dev/null
+        root_exec systemctl is-active --quiet xraydo-subscription.service || fail "subscription service health-check failed"
         subscription_curl=(curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
             --noproxy '*' --output /dev/null)
         if [[ "$TLS_MODE" == "private-ca" ]]; then

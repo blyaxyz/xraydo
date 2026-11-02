@@ -4,6 +4,8 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xraydo-installer-test.XXXXXX")"
 trap 'rm -rf -- "$TEMP_DIR"' EXIT
+printf 'ID=debian\nVERSION_ID="13"\n' > "$TEMP_DIR/os-release"
+export XRAYDO_OS_RELEASE="$TEMP_DIR/os-release"
 
 uname() {
     case "${1:-}" in
@@ -22,9 +24,7 @@ grep -q 'readonly TELEMT_VERSION="3.5.16"' "$ROOT_DIR/install.sh"
 grep -q 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214' "$ROOT_DIR/install.sh"
 grep -q '1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d' "$ROOT_DIR/install.sh"
 grep -q 'e6f46b2f3becf29bfd555cec8a059e429f7c082c1af402499b3a7940cf8ebd34' "$ROOT_DIR/install.sh"
-grep -q '05d7c32eff5990285657408cf383614d845ecc06aac0d5adc02a86d72c907146' "$ROOT_DIR/install.sh"
 grep -q '1e1bc87f05923b9673cbbaf34a3e50f7fdcf7d496cd24efcdb34c278ed18a659' "$ROOT_DIR/install.sh"
-grep -q '33d7b2aa55f8852ddcc59e0fa8f5ad9bca3ce94d9fea6665b918e9ae91820ae3' "$ROOT_DIR/install.sh"
 
 answers="$TEMP_DIR/answers"
 printf '%s\n' \
@@ -86,6 +86,13 @@ quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non
 [[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$quick_output" == *'"profile":"quick"'* ]]
 
+printf 'ID=alpine\nVERSION_ID="3.21"\n' > "$TEMP_DIR/unsupported-os-release"
+if XRAYDO_OS_RELEASE="$TEMP_DIR/unsupported-os-release" \
+    "$ROOT_DIR/install.sh" --dry-run --non-interactive >/dev/null 2>&1; then
+    printf 'unsupported distribution was accepted\n' >&2
+    exit 1
+fi
+
 telemt_only_output="$("$ROOT_DIR/install.sh" --telemt-only --lang ru \
     --telemt-port 9443 --telemt-tls-domain vk.com --dry-run --non-interactive)"
 [[ "$telemt_only_output" == *'Cores / Ядра: telemt'* ]]
@@ -113,7 +120,7 @@ grep -q 'settings subscription-url off' "$ROOT_DIR/install.sh"
 grep -q 'disable --now xraydo-subscription.service' "$ROOT_DIR/install.sh"
 grep -q 'next_free_port_excluding tcp 8444 "\$telemt_port" "\$xray_port"' "$ROOT_DIR/install.sh"
 grep -q 'systemctl is-active --quiet "xraydo-\$core.service"' "$ROOT_DIR/install.sh"
-grep -q 'rc-update add "xraydo-\$core" default' "$ROOT_DIR/install.sh"
+! grep -Eq 'rc-service|rc-update|apk add|dnf install|yum install|zypper' "$ROOT_DIR/install.sh"
 grep -q 'compgen -G.*src/xraydo/data/\*\.json' "$ROOT_DIR/install.sh"
 grep -q 'tls renew-daemon --once' "$ROOT_DIR/install.sh"
 grep -q 'port_owner 443' "$ROOT_DIR/install.sh"

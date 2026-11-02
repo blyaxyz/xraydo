@@ -122,15 +122,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(status["restarts"], 2)
         self.assertIn("xraydo-telemt", run.call_args.args[0])
 
-    def test_openrc_control_uses_service_name_and_action(self) -> None:
-        with (
-            mock.patch("xraydo.services.init_system", return_value="openrc"),
-            mock.patch("xraydo.services._run", return_value=completed([])) as run,
-        ):
-            result = control_service("telemt", "restart")
-        self.assertEqual(result["manager"], "openrc")
-        run.assert_called_once_with(["rc-service", "xraydo-telemt", "restart"])
-
     def test_logs_are_bounded_and_use_journal_unit(self) -> None:
         with self.assertRaisesRegex(CoreServiceError, "service_invalid_lines"):
             service_logs("telemt", 0)
