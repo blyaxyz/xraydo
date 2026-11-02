@@ -107,8 +107,16 @@ class CliTests(unittest.TestCase):
             "ip": "8.8.8.8",
             "country": "DE",
             "source": "https://api.country.is/",
+            "version": "2",
         }
         state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        location_result = run_cli(self.path, "--json", "country", "location")
+        self.assertEqual(location_result.returncode, 0, location_result.stderr)
+        self.assertEqual(
+            json.loads(location_result.stdout)["server_location"]["country"],
+            "DE",
+        )
 
         created = run_cli(
             self.path,

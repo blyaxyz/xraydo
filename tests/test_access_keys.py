@@ -39,6 +39,22 @@ class AccessKeyTests(unittest.TestCase):
             phone["credentials"]["telemt_secret"],
         )
 
+    def test_relocate_corrects_existing_geolocated_key_name(self) -> None:
+        key = self.keys.default_for_user(self.user["id"])
+        state = self.store.load()
+        stored = next(item for item in state["access_keys"] if item["id"] == key["id"])
+        stored["device_name"] = "🇩🇪 Germany · default"
+        stored["location"] = {"ip": "8.8.8.8", "country": "DE", "version": "1"}
+        self.store.save(state)
+
+        changed = self.keys.relocate(
+            {"ip": "8.8.8.8", "country": "PL", "version": "2"},
+            "ru",
+        )
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(changed[0]["device_name"], "🇵🇱 Польша · default")
+        self.assertEqual(changed[0]["location"]["country"], "PL")
+
     def test_protocol_credential_schema_is_explicit_and_fail_closed(self) -> None:
         key = self.keys.default_for_user(self.user["id"])
         self.assertEqual(

@@ -175,6 +175,8 @@
   "country.detected": "Detected country: {flag} {iso} — {name}",
   "country.unknown": "Country was not detected; the original name will be preserved.",
   "country.flags": "Automatic country flags: {state}",
+  "country.location": "Server location: {flag} {name} ({ip})",
+  "error.country_location_unavailable": "Server location could not be detected.",
   "error.country_invalid_iso": "Unknown country ISO code.",
   "error.duplicate_node_alias": "A node with this alias already exists.",
   "error.invalid_node_alias": "Node alias may contain 1-64 ASCII letters, digits, dots, dashes, or underscores.",

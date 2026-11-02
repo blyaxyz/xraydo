@@ -77,6 +77,8 @@ def parser() -> argparse.ArgumentParser:
     country_commands.add_parser("list")
     country_detect = country_commands.add_parser("detect")
     country_detect.add_argument("server_name")
+    country_location = country_commands.add_parser("location")
+    country_location.add_argument("--refresh", action="store_true")
 
     node = commands.add_parser("node", aliases=["nodes"])
     node_commands = node.add_subparsers(dest="node_command", required=True)
@@ -740,26 +742,41 @@ def public_access_key(key: dict[str, object], show_secrets: bool = False) -> dic
     return result
 
 
-def localized_key_context(
+def server_location(
     store: Store,
-    device_name: str,
     language: str,
-) -> tuple[str, Optional[dict[str, str]]]:
+    refresh: bool = False,
+) -> Optional[dict[str, str]]:
     data = store.load()
     settings = data.setdefault("settings", {})
     if not settings.get("country_auto_flags", True):
-        return device_name, None
+        return None
     cached = settings.get("server_location")
     location = cached if isinstance(cached, dict) else None
     country = get_country(str(location.get("country", ""))) if location else None
-    if country is None:
+    if refresh or country is None or location.get("version") != "2":
         location = detect_public_location()
         if location:
             country = get_country(location["country"])
             with store.transaction() as current:
                 current.setdefault("settings", {})["server_location"] = location
+            if cached:
+                AccessKeyService(store).relocate(location, language)
     if not location or country is None:
+        return None
+    return location
+
+
+def localized_key_context(
+    store: Store,
+    device_name: str,
+    language: str,
+) -> tuple[str, Optional[dict[str, str]]]:
+    location = server_location(store, language)
+    if not location:
         return device_name, None
+    country = get_country(location["country"])
+    assert country is not None
     return format_key_name(device_name, country, language), location
 
 
@@ -1090,6 +1107,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     print(translator.get("country.ambiguous", choices=choices))
                 else:
                     print(translator.get("country.unknown"))
+            elif args.country_command == "location":
+                location = server_location(store, language, args.refresh)
+                if not location:
+                    raise ValueError("country_location_unavailable")
+                country = get_country(location["country"])
+                assert country is not None
+                emit(
+                    {"server_location": location},
+                    translator.get(
+                        "country.location",
+                        flag=country["flag"],
+                        name=country["names"][language],
+                        ip=location["ip"],
+                    ),
+                    args.json,
+                )
         elif args.command in {"node", "nodes"}:
             if args.node_command == "add":
                 item = nodes.create(

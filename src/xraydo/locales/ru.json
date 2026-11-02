@@ -175,6 +175,8 @@
   "country.detected": "Определена страна: {flag} {iso} — {name}",
   "country.unknown": "Страна не определена; исходное название будет сохранено.",
   "country.flags": "Автоматические флаги стран: {state}",
+  "country.location": "Локация сервера: {flag} {name} ({ip})",
+  "error.country_location_unavailable": "Не удалось определить локацию сервера.",
   "error.country_invalid_iso": "Неизвестный ISO-код страны.",
   "error.duplicate_node_alias": "Нода с таким alias уже существует.",
   "error.invalid_node_alias": "Alias ноды может содержать 1–64 латинских букв, цифр, точек, дефисов или подчёркиваний.",

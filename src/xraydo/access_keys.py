@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from .audit import append_audit
+from .countries import format_key_name, get_country
 from .store import Store
 from .sync_queue import enqueue_access_key
 
@@ -139,6 +140,29 @@ class AccessKeyService:
                      object_id=key["id"], fields=["user_id", "device_name", "state"])
         self.store.save(data)
         return key
+
+    def relocate(self, location: dict[str, str], language: str = "en") -> list[dict[str, Any]]:
+        country = get_country(location.get("country", ""))
+        if country is None:
+            raise ValueError("country_invalid_iso")
+        changed = []
+        with self.store.transaction() as data:
+            for key in data.get("access_keys", []):
+                if not key.get("location"):
+                    continue
+                key["device_name"] = format_key_name(key["device_name"], country, language)
+                key["location"] = dict(location)
+                key["updated_at"] = _now()
+                enqueue_access_key(data, key)
+                append_audit(
+                    data,
+                    action="access_key.relocate",
+                    object_type="access_key",
+                    object_id=key["id"],
+                    fields=["device_name", "location"],
+                )
+                changed.append(dict(key))
+        return changed
 
     def default_for_user(self, user_id: str, key_id: Optional[str] = None) -> dict[str, Any]:
         data = self.store.load()

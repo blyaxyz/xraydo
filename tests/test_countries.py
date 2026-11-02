@@ -57,12 +57,18 @@ class CountryTests(unittest.TestCase):
 
     def test_key_name_contains_localized_country_and_preserves_device(self) -> None:
         germany = get_country("DE")
+        poland = get_country("PL")
         assert germany is not None
+        assert poland is not None
         self.assertEqual(format_key_name("phone", germany, "en"), "🇩🇪 Germany · phone")
         self.assertEqual(format_key_name("phone", germany, "ru"), "🇩🇪 Германия · phone")
         self.assertEqual(
             format_key_name("🇩🇪 Germany · phone", germany, "ru"),
             "🇩🇪 Германия · phone",
+        )
+        self.assertEqual(
+            format_key_name("🇩🇪 Germany · phone", poland, "ru"),
+            "🇵🇱 Польша · phone",
         )
 
     def test_public_location_uses_validated_ip_and_country(self) -> None:
@@ -74,13 +80,43 @@ class CountryTests(unittest.TestCase):
                 self.close()
 
         def opener(request, timeout):
-            self.assertEqual(request.full_url, "https://geo.example/")
             self.assertEqual(timeout, 0.5)
-            return Response(b'{"ip":"8.8.8.8","country":"DE"}')
+            if request.full_url == "https://geo.example/":
+                return Response(b'{"ip":"8.8.8.8","country":"DE"}')
+            self.assertEqual(request.full_url, "https://rdap.example/ip/8.8.8.8")
+            return Response(b'{"country":"PL"}')
 
         self.assertEqual(
             detect_public_location(
-                url="https://geo.example/", timeout=0.5, opener=opener
+                url="https://geo.example/",
+                rdap_url="https://rdap.example/ip/{ip}",
+                timeout=0.5,
+                opener=opener,
             ),
-            {"ip": "8.8.8.8", "country": "DE", "source": "https://geo.example/"},
+            {
+                "ip": "8.8.8.8",
+                "country": "PL",
+                "geoip_country": "DE",
+                "source": "https://rdap.example/ip/8.8.8.8",
+                "version": "2",
+            },
         )
+
+    def test_public_location_falls_back_to_geoip_when_rdap_is_disabled(self) -> None:
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        result = detect_public_location(
+            url="https://geo.example/",
+            rdap_url="off",
+            opener=lambda _request, timeout: Response(
+                b'{"ip":"8.8.8.8","country":"DE"}'
+            ),
+        )
+        self.assertEqual(result["country"], "DE")
+        self.assertEqual(result["source"], "https://geo.example/")
+        self.assertEqual(result["version"], "2")

@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 
 DEFAULT_GEOIP_URL = "https://api.country.is/"
+DEFAULT_RDAP_URL = "https://rdap.org/ip/{ip}"
 
 
 def normalize_country_text(value: str) -> str:
@@ -87,11 +88,14 @@ def format_key_name(
     existing = _leading_flag(base)
     if existing:
         base = base[len(existing):].lstrip()
-    for known_name in (*country["names"].values(), country["iso"]):
-        prefix = f"{known_name} ·"
-        if base.casefold().startswith(prefix.casefold()):
-            base = base[len(prefix):].lstrip()
-            break
+        if " · " in base:
+            base = base.split(" · ", 1)[1].strip()
+    else:
+        for known_name in (*country["names"].values(), country["iso"]):
+            prefix = f"{known_name} ·"
+            if base.casefold().startswith(prefix.casefold()):
+                base = base[len(prefix):].lstrip()
+                break
     base = base or "default"
     localized_country = country["names"].get(language, country["names"]["en"])
     prefix = f"{country['flag']} {localized_country} · "
@@ -105,9 +109,10 @@ def detect_public_location(
     *,
     timeout: float = 2.0,
     url: Optional[str] = None,
+    rdap_url: Optional[str] = None,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> Optional[dict[str, str]]:
-    """Resolve the calling server's public IP and ISO country, failing open."""
+    """Resolve public IP, preferring its authoritative RDAP network country."""
     endpoint = url or os.environ.get("XRAYDO_GEOIP_URL", DEFAULT_GEOIP_URL)
     if endpoint.casefold() in {"off", "none", "disabled"}:
         return None
@@ -121,10 +126,41 @@ def detect_public_location(
         if not isinstance(payload, dict):
             return None
         address = str(payload.get("ip", "")).strip()
-        iso = str(payload.get("country", "")).strip().upper()
+        geoip_iso = str(payload.get("country", "")).strip().upper()
         parsed_address = ipaddress.ip_address(address)
-        if not parsed_address.is_global or get_country(iso) is None:
+        if not parsed_address.is_global or get_country(geoip_iso) is None:
             return None
-        return {"ip": str(parsed_address), "country": iso, "source": endpoint}
+        resolved_rdap_url = rdap_url or os.environ.get(
+            "XRAYDO_RDAP_URL", DEFAULT_RDAP_URL
+        )
+        if resolved_rdap_url.casefold() not in {"off", "none", "disabled"}:
+            rdap_endpoint = resolved_rdap_url.format(ip=str(parsed_address))
+            try:
+                rdap_request = urllib.request.Request(
+                    rdap_endpoint,
+                    headers={"Accept": "application/rdap+json, application/json", "User-Agent": "xraydo/geoip"},
+                )
+                with opener(rdap_request, timeout=timeout) as response:
+                    raw_rdap = response.read(1_048_577)
+                if len(raw_rdap) <= 1_048_576:
+                    rdap_payload = json.loads(raw_rdap)
+                    rdap_iso = str(rdap_payload.get("country", "")).strip().upper()
+                    if get_country(rdap_iso) is not None:
+                        return {
+                            "ip": str(parsed_address),
+                            "country": rdap_iso,
+                            "geoip_country": geoip_iso,
+                            "source": rdap_endpoint,
+                            "version": "2",
+                        }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError, KeyError):
+                pass
+        return {
+            "ip": str(parsed_address),
+            "country": geoip_iso,
+            "geoip_country": geoip_iso,
+            "source": endpoint,
+            "version": "2",
+        }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
