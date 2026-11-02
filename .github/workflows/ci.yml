@@ -24,6 +24,13 @@ jobs:
       - run: ./install.sh --dry-run --non-interactive
       - run: PYTHONPATH=src XRAYDO_DATA_DIR=/tmp/xraydo-smoke python -m xraydo.cli --json status
 
+  release-assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify every pinned download exists
+        run: bash scripts/check_release_assets.sh
+
   support-matrix:
     runs-on: ubuntu-24.04
     outputs:

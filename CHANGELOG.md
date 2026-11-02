@@ -162,6 +162,10 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Fixed
 
+- The standalone installer no longer requests the nonexistent Xray-core
+  `v26.10.29` release. It pins the published `v26.10.31` amd64/arm64 artifacts,
+  verifies their official SHA-256 digests, reports the failed URL clearly, and
+  CI now checks every pinned source/core download for availability.
 - REALITY creation now consistently defaults both target and SNI to `ya.ru` in
   the installer, direct CLI, menu, and internal API. Candidate latency ranking
   can no longer silently select Amazon when no target was supplied.

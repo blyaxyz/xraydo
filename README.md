@@ -26,22 +26,20 @@ Hysteria 2 и Telemt на Linux-сервере. Проект работает к
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-chmod +x install.sh
-sudo bash ./install.sh
+bash ./install.sh
 ```
 
 Одной командой:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o install.sh && chmod +x install.sh && sudo bash ./install.sh
+curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o install.sh && bash ./install.sh
 ```
 
 ### Через wget
 
 ```bash
 wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-chmod +x install.sh
-sudo bash ./install.sh
+bash ./install.sh
 ```
 
 Установщик проверит окружение, доставит зависимости, установит выбранные ядра,

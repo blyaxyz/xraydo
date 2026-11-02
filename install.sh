@@ -40,10 +40,10 @@ set -Eeuo pipefail
 # This file is intentionally self-contained. It can be downloaded on its own;
 # no checkout of the repository is required.
 readonly INSTALLER_VERSION="0.2.0"
-readonly XRAYDO_REF="0a9042c1c4301a64540227a8c4d15e291884f49d"
-readonly XRAYDO_ARCHIVE_SHA256="805dc650ba89786ebe12f7715546a9da939c960bb619ef59675c3bfdf67edc41"
+readonly XRAYDO_REF="2237d59d30f6633995f6edbedfbae6bc352f294f"
+readonly XRAYDO_ARCHIVE_SHA256="85c6f1b54b7de0fae97b1ca53897d5c47ba57888f3d6ecdee51003254e172a4c"
 readonly XRAYDO_ARCHIVE_URL="https://github.com/blyaxyz/xraydo/archive/${XRAYDO_REF}.tar.gz"
-readonly XRAY_VERSION="v26.10.29"
+readonly XRAY_VERSION="v26.10.31"
 readonly HYSTERIA_VERSION="app/v2.13.0"
 readonly TELEMT_VERSION="3.5.14"
 
@@ -1011,10 +1011,12 @@ download_verified() {
     local url="$1"
     local destination="$2"
     local checksum="$3"
-    curl --fail --location --silent --show-error \
+    if ! curl --fail --location --silent --show-error \
         --proto '=https' --tlsv1.2 \
         --connect-timeout 15 --retry 3 \
-        --output "$destination" "$url"
+        --output "$destination" "$url"; then
+        fail "cannot download pinned artifact: $url"
+    fi
     verify_checksum "$destination" "$checksum"
 }
 
@@ -1086,10 +1088,10 @@ fi
 if [[ ",$CORES," == *,xray,* ]]; then
     if [[ "$ARCH" == "amd64" ]]; then
         xray_asset="Xray-linux-64.zip"
-        xray_checksum="8a5f3e6a1057e4bd0f8a7c57c9d91204b4be0b74222a6e210d070603101163c2"
+        xray_checksum="e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214"
     else
         xray_asset="Xray-linux-arm64-v8a.zip"
-        xray_checksum="afe01f19045b05237420328028ee1ee2e1edd2100eb41a8cbbf50e683b0a6e58"
+        xray_checksum="1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d"
     fi
     xray_archive="$TEMP_DIR/$xray_asset"
     download_verified "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/$xray_asset" "$xray_archive" "$xray_checksum"

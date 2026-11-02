@@ -17,6 +17,9 @@ qrencode() { return 0; }
 export -f uname apt-get qrencode
 
 [[ "$("$ROOT_DIR/install.sh" --version)" == "0.2.0" ]]
+grep -q 'readonly XRAY_VERSION="v26.10.31"' "$ROOT_DIR/install.sh"
+grep -q 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214' "$ROOT_DIR/install.sh"
+grep -q '1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d' "$ROOT_DIR/install.sh"
 
 answers="$TEMP_DIR/answers"
 printf '%s\n' \
