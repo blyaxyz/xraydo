@@ -468,33 +468,44 @@ if [[ -z "$PROFILE" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
         if [[ "$LANGUAGE" == "ru" ]]; then
             printf '\n%s\n' \
                 'Выберите сценарий:' \
-                '  1) Быстрая установка (рекомендуется) — один сервер, безопасные defaults' \
-                '  2) Главная нода — централизованное управление пользователями и нодами' \
-                '  3) Управляемая нода — подключение к существующей главной ноде' \
-                '  4) Расширенная настройка — ручной выбор роли, ядер и TLS' \
+                '  1) Быстрая установка (рекомендуется) — всё автоматически, без вопросов' \
+                '  2) Продвинутая установка — ручной выбор роли, ядер, TLS и пользователя' \
                 '  q) Отмена'
             read -r -p 'Выбор [1]: ' profile_choice
         else
             printf '\n%s\n' \
                 'Select installation profile:' \
-                '  1) Quick install (recommended) — one server with safe defaults' \
-                '  2) Master node — centralized user and node management' \
-                '  3) Managed node — attach to an existing master' \
-                '  4) Advanced setup — choose role, cores, and TLS manually' \
+                '  1) Quick install (recommended) — fully automatic, no more questions' \
+                '  2) Advanced install — choose role, cores, TLS, and user manually' \
                 '  q) Cancel'
             read -r -p 'Choice [1]: ' profile_choice
         fi
         case "${profile_choice:-1}" in
             1) PROFILE="quick"; break ;;
-            2) PROFILE="master"; break ;;
-            3) PROFILE="node"; break ;;
-            4) PROFILE="advanced"; break ;;
+            2) PROFILE="advanced"; break ;;
             q|Q) printf '%s\n' "Cancelled / Отменено."; exit 0 ;;
         esac
     done
 fi
 
 [[ -n "$PROFILE" ]] || PROFILE="quick"
+
+# Quick install is deliberately opinionated: after it is selected there are no
+# further questions or confirmation screens. Explicit command-line/answer-file
+# values still override these defaults for automation and backwards compatibility.
+if [[ "$PROFILE" == "quick" ]]; then
+    ROLE="${ROLE:-standalone}"
+    CORES="${CORES:-xray,hysteria,telemt}"
+    FIRST_USER_MODE="${FIRST_USER_MODE:-recommended}"
+    if [[ "$TLS_MODE" == "auto" ]]; then
+        if [[ -n "$PUBLIC_HOST" && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$PUBLIC_HOST" != *:* ]]; then
+            TLS_MODE="domain"
+        else
+            TLS_MODE="public-ip"
+        fi
+    fi
+    ASSUME_YES=true
+fi
 
 if [[ -z "$ROLE" ]]; then
     case "$PROFILE" in
@@ -561,7 +572,8 @@ if [[ "$PROFILE" == "advanced" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
     esac
 fi
 
-if [[ "$ROLE" != "node" && "$TLS_MODE" != "private-ca" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+if [[ "$PROFILE" == "advanced" && "$ROLE" != "node" && "$TLS_MODE" != "private-ca" && \
+    "$NON_INTERACTIVE" != true && -t 0 ]]; then
     if [[ -z "$PUBLIC_HOST" ]]; then
         if [[ "$LANGUAGE" == "ru" ]]; then
             read -r -p 'Домен для Let’s Encrypt (Enter = сертификат на публичный IP): ' PUBLIC_HOST
@@ -587,7 +599,8 @@ if [[ "$TLS_MODE" == "auto" ]]; then
     fi
 fi
 
-if [[ ",$CORES," == *,telemt,* && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+if [[ "$PROFILE" == "advanced" && ",$CORES," == *,telemt,* && \
+    "$NON_INTERACTIVE" != true && -t 0 ]]; then
     read -r -p "Telemt port / Порт Telemt [$TELEMT_PORT]: " custom_telemt_port
     read -r -p "Telemt TLS domain / TLS-домен Telemt [$TELEMT_TLS_DOMAIN]: " custom_telemt_domain
     TELEMT_PORT="${custom_telemt_port:-$TELEMT_PORT}"
@@ -599,7 +612,7 @@ fi
 if [[ -z "$FIRST_USER_MODE" ]]; then
     if [[ "$ROLE" == "node" ]]; then
         FIRST_USER_MODE="skip"
-    elif [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
+    elif [[ "$PROFILE" != "advanced" || "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
         FIRST_USER_MODE="recommended"
     else
         if [[ "$LANGUAGE" == "ru" ]]; then
@@ -1487,7 +1500,7 @@ start_core_service() {
 detect_public_host() {
     [[ -n "$PUBLIC_HOST" ]] && return 0
     PUBLIC_HOST="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true)"
-    if [[ -z "$PUBLIC_HOST" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
+    if [[ -z "$PUBLIC_HOST" && "$PROFILE" == "advanced" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
         read -r -p 'Public DNS name or IP / Публичный DNS или IP: ' PUBLIC_HOST
     fi
     [[ -n "$PUBLIC_HOST" ]] || fail "cannot detect public address; use --public-host"

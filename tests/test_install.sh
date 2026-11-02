@@ -43,7 +43,7 @@ first_user_answers="$TEMP_DIR/first-user-answers"
 printf '%s\n' \
     'LANGUAGE=en' \
     "PREFIX=$TEMP_DIR/prefix" \
-    'PROFILE=quick' \
+    'PROFILE=advanced' \
     'ROLE=standalone' \
     'CORES=xray,hysteria,telemt' \
     'FIRST_USER_MODE=custom' \
@@ -68,6 +68,16 @@ first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dr
 [[ "$first_user_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$first_user_output" == *'Hysteria ECH: decoy.example.com'* ]]
 [[ "$first_user_output" != *'subscription_token'* ]]
+
+quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non-interactive)"
+[[ "$quick_output" == *'Profile / Профиль: quick'* ]]
+[[ "$quick_output" == *'Role / Роль: standalone'* ]]
+[[ "$quick_output" == *'Cores / Ядра: xray,hysteria,telemt'* ]]
+[[ "$quick_output" == *'TLS: public-ip'* ]]
+[[ "$quick_output" == *'Первый пользователь: default (recommended)'* ]]
+[[ "$quick_output" == *'REALITY target/SNI: ya.ru'* ]]
+[[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
+[[ "$quick_output" == *'"profile":"quick"'* ]]
 
 telemt_only_output="$("$ROOT_DIR/install.sh" --telemt-only --lang ru \
     --telemt-port 9443 --telemt-tls-domain vk.com --dry-run --non-interactive)"
@@ -107,6 +117,9 @@ grep -q 'core hysteria' "$ROOT_DIR/install.sh"
 grep -q 'core telemt' "$ROOT_DIR/install.sh"
 grep -q -- '--tls-domain "\$TELEMT_TLS_DOMAIN"' "$ROOT_DIR/install.sh"
 grep -q -- '--telemt-only' "$ROOT_DIR/install.sh"
+grep -q 'Продвинутая установка — ручной выбор роли, ядер, TLS и пользователя' "$ROOT_DIR/install.sh"
+grep -q 'if \[\[ "$PROFILE" == "quick" \]\]; then' "$ROOT_DIR/install.sh"
+grep -q 'ASSUME_YES=true' "$ROOT_DIR/install.sh"
 grep -q 'Your Telegram Proxy connection link' "$ROOT_DIR/install.sh"
 grep -q 'Ссылка для подключения Telegram Proxy' "$ROOT_DIR/install.sh"
 grep -q 'protocol.*state.*healthy' "$ROOT_DIR/install.sh"

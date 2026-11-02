@@ -49,15 +49,18 @@ bash ./install.sh
 
 | Сценарий | Профиль | Когда использовать |
 |---|---|---|
-| Один обычный сервер | `quick` | Самый простой старт |
-| Управляющий сервер | `master` | Централизованное управление узлами |
-| Подчинённый сервер | `node` | Подключение к master |
-| Ручная настройка | `advanced` | Выбор компонентов и параметров |
+| Быстрая установка | `quick` | Один сервер, полностью автоматически |
+| Продвинутая установка | `advanced` | Роль standalone/master/node и ручные параметры |
 | Только Telegram Proxy | `--telemt-only` | Xray и Hysteria не нужны |
 
-Для большинства пользователей подходит `quick`. Мастер задаст вопросы о языке,
-роли сервера, TLS, портах и первом пользователе. Если есть домен, заранее
-направьте его A/AAAA-запись на сервер и откройте TCP-порт 80 для ACME.
+Для большинства пользователей подходит `quick`. После его выбора установщик
+больше ничего не спрашивает: автоматически ставит все три ядра, настраивает
+REALITY с `ya.ru`, Telemt на `8443` с Fake TLS `vk.com`, выпускает сертификат
+Let's Encrypt на определённый публичный IP и создаёт пользователя `default`.
+В конце он выводит подписку и все готовые ключи.
+
+Для домена, схемы master → node, другого набора ядер, TLS, портов или лимитов
+выберите `advanced`: все ручные настройки собраны только в этом сценарии.
 
 ## Только Telemt / Telegram Proxy
 
@@ -301,6 +304,9 @@ chmod +x install.sh
 sudo bash ./install.sh
 ```
 
-Choose `quick` for a single server. Then run `sudo xraydo` for the interactive
+Choose `quick` for a fully automatic single-server installation. There are no
+more questions after that selection; the installer prints the subscription and
+all client keys when it finishes. Choose `advanced` when you need custom roles,
+cores, TLS, ports, or user limits. Then run `sudo xraydo` for the interactive
 menu, `sudo xraydo status` for health information, or `xraydo --help` for the
 complete CLI reference.
