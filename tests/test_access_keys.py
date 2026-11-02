@@ -122,6 +122,24 @@ class AccessKeyTests(unittest.TestCase):
         self.assertIsNone(updated["validity"]["activated_at"])
         self.assertIsNone(updated["validity"]["expires_at"])
 
+    def test_clear_limits_removes_all_restrictions_and_reenables_key(self) -> None:
+        key = self.keys.default_for_user(self.user["id"])
+        self.keys.set_limits(
+            key["id"], total_bytes=100, upload_bytes=40, download_bytes=60,
+            max_ips=2, duration_seconds=60, trusted_networks=["192.0.2.0/24"],
+        )
+        self.keys.set_state(key["id"], "disabled", "traffic")
+
+        cleared = self.keys.clear_limits(key["id"])
+
+        for field in ("total_bytes", "upload_bytes", "download_bytes", "max_ips"):
+            self.assertIsNone(cleared["quota"][field])
+        self.assertEqual(cleared["quota"]["trusted_networks"], [])
+        self.assertIsNone(cleared["validity"]["duration_seconds"])
+        self.assertIsNone(cleared["validity"]["expires_at"])
+        self.assertEqual(cleared["state"], "active")
+        self.assertIsNone(cleared["disabled_reason"])
+
     def test_absolute_expiry_extend_and_traffic_reset(self) -> None:
         key = self.keys.default_for_user(self.user["id"])
         updated = self.keys.set_limits(

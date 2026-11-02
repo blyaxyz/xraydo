@@ -388,6 +388,9 @@ def parser() -> argparse.ArgumentParser:
         "--ip-action", choices=("warn", "temporary_block", "disable")
     )
     key_limit.add_argument("--trusted-network", action="append")
+    key_limit.add_argument(
+        "--unlimited", action="store_true", help="remove traffic, expiry, device, and IP limits"
+    )
     key_extend = key_commands.add_parser("extend")
     key_extend.add_argument("key_id")
     key_extend.add_argument("--duration", required=True)
@@ -1758,19 +1761,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     args.json,
                 )
             elif args.key_command == "set-limit":
-                access_key = keys.set_limits(
-                    args.key_id,
-                    total_bytes=parse_size(args.traffic),
-                    upload_bytes=parse_size(args.upload),
-                    download_bytes=parse_size(args.download),
-                    max_ips=args.ips,
-                    duration_seconds=parse_duration(args.duration) if args.duration else None,
-                    expires_at=args.expires_at,
-                    starts=args.starts,
-                    ip_window_seconds=parse_duration(args.ip_window) if args.ip_window else None,
-                    ip_action=args.ip_action,
-                    trusted_networks=args.trusted_network,
+                limit_values = (
+                    args.traffic, args.upload, args.download, args.duration,
+                    args.expires_at, args.starts, args.ips, args.ip_window,
+                    args.ip_action, args.trusted_network,
                 )
+                if args.unlimited:
+                    if any(value is not None for value in limit_values):
+                        raise ValueError("access_key_unlimited_conflict")
+                    access_key = keys.clear_limits(args.key_id)
+                else:
+                    access_key = keys.set_limits(
+                        args.key_id,
+                        total_bytes=parse_size(args.traffic),
+                        upload_bytes=parse_size(args.upload),
+                        download_bytes=parse_size(args.download),
+                        max_ips=args.ips,
+                        duration_seconds=parse_duration(args.duration) if args.duration else None,
+                        expires_at=args.expires_at,
+                        starts=args.starts,
+                        ip_window_seconds=parse_duration(args.ip_window) if args.ip_window else None,
+                        ip_action=args.ip_action,
+                        trusted_networks=args.trusted_network,
+                    )
                 emit(
                     {"access_key": public_access_key(access_key)},
                     translator.get("access_key.limits_saved", id=access_key["id"]),

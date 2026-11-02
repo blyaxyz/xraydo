@@ -19,6 +19,7 @@
   "error.access_key_unknown_protocol": "The access-key credential schema does not support this protocol.",
   "error.access_key_invalid_credentials": "The access key is missing valid credentials required by the selected protocol.",
   "error.access_key_limits_empty": "Provide at least one access-key limit or validity change.",
+  "error.access_key_unlimited_conflict": "--unlimited cannot be combined with individual limits.",
   "error.invalid_admin_metadata": "Administrative fields or KEY=VALUE attributes are invalid or too long.",
   "error.invalid_device_name": "Device name must contain 1-128 printable characters.",
   "error.usage_invalid_bytes": "Usage byte deltas must be non-negative 64-bit integers.",

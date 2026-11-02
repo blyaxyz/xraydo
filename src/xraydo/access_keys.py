@@ -328,6 +328,36 @@ class AccessKeyService:
         self.store.save(data)
         return key
 
+    def clear_limits(self, key_id: str) -> dict[str, Any]:
+        data = self.store.load()
+        key = next((item for item in data["access_keys"] if item["id"] == key_id), None)
+        if key is None:
+            raise ValueError("access_key_not_found")
+        quota = key.setdefault("quota", {})
+        for field in ("total_bytes", "upload_bytes", "download_bytes", "max_ips"):
+            quota[field] = None
+        quota["trusted_networks"] = []
+        quota["ip_limit_warning"] = False
+        validity = key.setdefault("validity", {})
+        validity["starts"] = "immediate"
+        validity["duration_seconds"] = None
+        validity["expires_at"] = None
+        validity["activated_at"] = validity.get("activated_at") or _now()
+        if key.get("disabled_reason") in {"traffic", "expiry", "devices", "ip_limit"}:
+            key["state"] = "active"
+            key["disabled_reason"] = None
+        key["updated_at"] = _now()
+        enqueue_access_key(data, key)
+        append_audit(
+            data,
+            action="access_key.limits.clear",
+            object_type="access_key",
+            object_id=key["id"],
+            fields=["quota", "validity", "state"],
+        )
+        self.store.save(data)
+        return key
+
     def extend(self, key_id: str, duration_seconds: int) -> dict[str, Any]:
         if duration_seconds <= 0:
             raise ValueError("access_key_invalid_duration")

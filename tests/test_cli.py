@@ -425,6 +425,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(key["quota"]["total_bytes"], 10 * 1024**3)
         self.assertEqual(key["validity"]["duration_seconds"], 30 * 86_400)
         self.assertIsNotNone(key["validity"]["expires_at"])
+        unlimited = run_cli(
+            self.path, "--json", "key", "set-limit", key_id, "--unlimited"
+        )
+        self.assertEqual(unlimited.returncode, 0, unlimited.stderr)
+        cleared = json.loads(unlimited.stdout)["access_key"]
+        self.assertIsNone(cleared["quota"]["total_bytes"])
+        self.assertIsNone(cleared["quota"]["max_ips"])
+        self.assertIsNone(cleared["validity"]["duration_seconds"])
+        conflict = run_cli(
+            self.path, "key", "set-limit", key_id, "--unlimited", "--traffic", "1GB"
+        )
+        self.assertEqual(conflict.returncode, 2)
         self.assertEqual(
             run_cli(self.path, "key", "reset-traffic", key_id).returncode,
             0,

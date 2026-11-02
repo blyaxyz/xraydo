@@ -80,6 +80,8 @@ quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non
 [[ "$quick_output" == *'Cores / Ядра: xray,hysteria,telemt'* ]]
 [[ "$quick_output" == *'TLS: public-ip'* ]]
 [[ "$quick_output" == *'Первый пользователь: default (recommended)'* ]]
+[[ "$quick_output" == *'Limits / Лимиты: unlimited'* ]]
+[[ "$quick_output" != *'duration=30d, traffic=100GB'* ]]
 [[ "$quick_output" == *'REALITY target/SNI: ya.ru'* ]]
 [[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$quick_output" == *'"profile":"quick"'* ]]
@@ -125,6 +127,13 @@ grep -q -- '--telemt-only' "$ROOT_DIR/install.sh"
 grep -q 'Продвинутая установка — ручной выбор роли, ядер, TLS и пользователя' "$ROOT_DIR/install.sh"
 grep -q 'if \[\[ "$PROFILE" == "quick" \]\]; then' "$ROOT_DIR/install.sh"
 grep -q 'ASSUME_YES=true' "$ROOT_DIR/install.sh"
+grep -q 'FIRST_USER_LIMITS="unlimited"' "$ROOT_DIR/install.sh"
+grep -q 'access_key_id.*--unlimited' "$ROOT_DIR/install.sh"
+grep -q 'progress 100 "Готово"' "$ROOT_DIR/install.sh"
+grep -q 'QR-код подписки' "$ROOT_DIR/install.sh"
+grep -q 'Ключ Hysteria 2' "$ROOT_DIR/install.sh"
+grep -q 'Ключ Xray REALITY' "$ROOT_DIR/install.sh"
+grep -q 'Telegram Proxy URL' "$ROOT_DIR/install.sh"
 grep -q 'Your Telegram Proxy connection link' "$ROOT_DIR/install.sh"
 grep -q 'Ссылка для подключения Telegram Proxy' "$ROOT_DIR/install.sh"
 grep -q 'protocol.*state.*healthy' "$ROOT_DIR/install.sh"
@@ -132,7 +141,6 @@ grep -q 'xraydo-certbot-renew.timer' "$ROOT_DIR/install.sh"
 grep -q 'renewal-hooks/deploy' "$ROOT_DIR/install.sh"
 grep -q 'hysteria.*ech --public-name' "$ROOT_DIR/install.sh"
 grep -q 'subscription qr.*--token-file' "$ROOT_DIR/install.sh"
-grep -q 'qrencode -t ANSIUTF8 -o -' "$ROOT_DIR/install.sh"
 grep -q 'NON_INTERACTIVE.*-t 0.*-t 1.*-w /dev/tty' "$ROOT_DIR/install.sh"
 grep -q 'install -d -m 0755 /var/lib/xraydo' "$ROOT_DIR/install.sh"
 grep -q 'stable_installer=.*lib/xraydo/install.sh' "$ROOT_DIR/install.sh"

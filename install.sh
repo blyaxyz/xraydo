@@ -80,6 +80,7 @@ OS_VERSION="unknown"
 TEMP_DIR=""
 SOURCE_DIR=""
 INSTALL_WITH_ROOT=false
+QUICK_UI=false
 
 usage() {
     cat <<'EOF'
@@ -118,7 +119,11 @@ EOF
 }
 
 fail() {
-    printf 'Error: %s\n' "$1" >&2
+    if [[ "$QUICK_UI" == true ]]; then
+        printf '\nError: %s\n' "$1" >&4
+    else
+        printf 'Error: %s\n' "$1" >&2
+    fi
     exit 2
 }
 
@@ -497,6 +502,7 @@ if [[ "$PROFILE" == "quick" ]]; then
     ROLE="${ROLE:-standalone}"
     CORES="${CORES:-xray,hysteria,telemt}"
     FIRST_USER_MODE="${FIRST_USER_MODE:-recommended}"
+    FIRST_USER_LIMITS="unlimited"
     if [[ "$TLS_MODE" == "auto" ]]; then
         if [[ -n "$PUBLIC_HOST" && ! "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ && "$PUBLIC_HOST" != *:* ]]; then
             TLS_MODE="domain"
@@ -896,6 +902,7 @@ fi
 hysteria_stats_port="$(next_free_port tcp 9999)"
 telemt_api_port="$(next_free_port tcp 9091)"
 
+if [[ "$PROFILE" != "quick" || "$DRY_RUN" == true || "$TELEMT_ONLY" == true ]]; then
 printf '\n%s:\n' "$PLAN_TITLE"
 printf '  %s: %s %s / %s / %s\n' "$PLATFORM_LABEL" "$OS_ID" "$OS_VERSION" "$ARCH" "$PACKAGE_MANAGER"
 printf '  Profile / Профиль: %s\n' "$PROFILE"
@@ -928,7 +935,7 @@ fi
 if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     printf '  First user / Первый пользователь: %s (%s)\n' "$FIRST_USER_NAME" "$FIRST_USER_MODE"
     if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
-        printf '    Limits / Лимиты: unlimited; devices: 1\n'
+        printf '    Limits / Лимиты: unlimited\n'
     else
         printf '    Limits / Лимиты: duration=%s, traffic=%s, devices=1, IP=%s\n' \
             "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
@@ -941,6 +948,7 @@ else
     printf '  First user / Первый пользователь: skipped (no credentials/subscription)\n'
 fi
 printf '  Firewall / Файрвол: unchanged / без изменений\n'
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
     printf '{"action":"install","arch":"%s","cores":"%s","dry_run":true,"first_user":"%s","language":"%s","limits":"%s","os":"%s","package_manager":"%s","profile":"%s","ref":"%s","role":"%s"}\n' \
@@ -955,6 +963,29 @@ if [[ "$ASSUME_YES" != true ]]; then
         printf '%s\n' "$CANCEL_TEXT"
         exit 0
     fi
+fi
+
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xraydo-install.XXXXXX")"
+
+progress() {
+    local percent="$1"
+    local label="$2"
+    local width=30 filled bar
+    filled=$((percent * width / 100))
+    printf -v bar '%*s' "$filled" ''
+    bar="${bar// /#}"
+    if [[ -t 3 ]]; then
+        printf '\r  [%-30s] %3d%%  %s' "$bar" "$percent" "$label" >&3
+    else
+        printf '[%-30s] %3d%%  %s\n' "$bar" "$percent" "$label" >&3
+    fi
+}
+
+if [[ "$PROFILE" == "quick" && "$TELEMT_ONLY" != true ]]; then
+    QUICK_UI=true
+    exec 3>&1 4>&2
+    exec >>"$TEMP_DIR/diagnostics.log" 2>&1
+    [[ "$LANGUAGE" == "ru" ]] && progress 5 "Подготовка" || progress 5 "Preparing"
 fi
 
 packages_apt() {
@@ -979,6 +1010,9 @@ install_system_packages() {
 }
 
 install_system_packages
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 15 "Системные компоненты" || progress 15 "System components"
+fi
 
 ensure_certbot() {
     if [[ "$TLS_MODE" == "private-ca" ]]; then
@@ -1007,6 +1041,9 @@ ensure_certbot() {
 }
 
 ensure_certbot
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 25 "Защищённое соединение" || progress 25 "Secure connection"
+fi
 
 for required_command in python3 curl tar install qrencode; do
     command -v "$required_command" >/dev/null 2>&1 || fail "required command is unavailable after package installation: $required_command"
@@ -1018,7 +1055,6 @@ if [[ ",$CORES," == *,xray,* ]]; then
     command -v unzip >/dev/null 2>&1 || fail "unzip is unavailable after package installation"
 fi
 
-TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xraydo-install.XXXXXX")"
 archive_path="$TEMP_DIR/xraydo.tar.gz"
 
 printf '%s\n' "$DOWNLOAD_TEXT"
@@ -1035,6 +1071,9 @@ fi
 actual_checksum="${actual_checksum%% *}"
 [[ "$actual_checksum" == "$XRAYDO_ARCHIVE_SHA256" ]] || \
     fail "archive checksum mismatch; expected $XRAYDO_ARCHIVE_SHA256, got $actual_checksum"
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 35 "Загрузка" || progress 35 "Downloading"
+fi
 
 tar -xzf "$archive_path" -C "$TEMP_DIR"
 SOURCE_DIR="$TEMP_DIR/xraydo-$XRAYDO_REF"
@@ -1189,6 +1228,9 @@ if [[ ",$CORES," == *,telemt,* ]]; then
     install_exec install -d -m 0755 "$CORE_DIR/telemt/$TELEMT_VERSION"
     install_exec install -m 0755 "$telemt_binary" "$CORE_DIR/telemt/$TELEMT_VERSION/telemt"
     install_exec install -m 0755 "$telemt_binary" "$PREFIX/bin/telemt"
+fi
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 55 "Установка компонентов" || progress 55 "Installing components"
 fi
 
 ensure_system_user() {
@@ -1591,10 +1633,18 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
         fi
     fi
 fi
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 70 "Службы и автозапуск" || progress 70 "Services and autostart"
+fi
 
 first_user_created=false
 subscription_service_started=false
 subscription_token=""
+subscription_url=""
+token_file=""
+xray_link=""
+hysteria_link=""
+mtproto_link=""
 xray_state="not selected"
 hysteria_state="not selected"
 telemt_state="not selected"
@@ -1645,10 +1695,16 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     chmod 0600 "$keys_json"
     access_key_id="$(sed -n 's/.*"id": "\([^"]*\)".*/\1/p' "$keys_json" | head -n 1)"
     [[ -n "$access_key_id" ]] || fail "default access key not found"
-    if [[ "$FIRST_USER_LIMITS" != "unlimited" ]]; then
+    if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
+        quiet_root "remove first-user limits" "$BINARY_PATH" --json key set-limit \
+            "$access_key_id" --unlimited || fail "cannot remove first-user limits"
+    else
         quiet_root "first-user limits" "$BINARY_PATH" --json key set-limit "$access_key_id" \
             --traffic "$FIRST_USER_TRAFFIC" --duration "$FIRST_USER_DURATION" \
             --starts immediate --ips "$FIRST_USER_IPS" || fail "cannot apply first-user limits"
+    fi
+    if [[ "$QUICK_UI" == true ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 78 "Базовый пользователь" || progress 78 "Base user"
     fi
 
     if [[ ",$CORES," == *,xray,* ]]; then
@@ -1712,6 +1768,9 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             telemt_state="failed; endpoint not published"
         fi
     fi
+    if [[ "$QUICK_UI" == true ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 90 "Проверка протоколов" || progress 90 "Checking protocols"
+    fi
 
     if [[ "$TELEMT_ONLY" == true ]]; then
         quiet_root "disable standard subscription URL for Telemt-only" \
@@ -1767,43 +1826,39 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
         chmod 0600 "$telemt_json"
         mtproto_link="$(sed -n 's/.*"uri": "\(tg:\/\/proxy?[^"]*\)".*/\1/p' "$telemt_json" | head -n 1)"
-        first_user_details="$TEMP_DIR/first-user-details.txt"
-        root_exec "$BINARY_PATH" user show "$FIRST_USER_NAME" >"$first_user_details" || \
+        subscription_json="$TEMP_DIR/subscription.json"
+        root_exec "$BINARY_PATH" --json subscription show "$FIRST_USER_NAME" >"$subscription_json" || \
             fail "first-user keys could not be rendered"
-        chmod 0600 "$first_user_details"
-        if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
-            {
-                printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
-                if [[ "$TLS_MODE" == "private-ca" ]]; then
-                    printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
-                else
-                    printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
-                fi
-                [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
-                printf '\nBase user, subscription content and access keys:\n'
-                cat "$first_user_details"
-                printf '\nSubscription QR:\n'
-            } >/dev/tty
-            root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
-            if [[ -n "$mtproto_link" ]]; then
-                printf '%s' "$mtproto_link" | qrencode -t ANSIUTF8 -o - >/dev/tty
+        chmod 0600 "$subscription_json"
+        xray_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x["uri"] for x in d["subscription"]["entries"] if x.get("protocol") == "xray_reality"), ""))' "$subscription_json")"
+        hysteria_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x["uri"] for x in d["subscription"]["entries"] if x.get("protocol") == "hysteria2"), ""))' "$subscription_json")"
+
+        credentials_file="$DATA_DIR/bootstrap-$FIRST_USER_NAME.txt"
+        credentials_tmp="$TEMP_DIR/bootstrap.txt"
+        (umask 077; {
+            printf 'Subscription: %s\n' "$subscription_url"
+            [[ -z "$hysteria_link" ]] || printf 'Hysteria 2: %s\n' "$hysteria_link"
+            [[ -z "$xray_link" ]] || printf 'Xray REALITY: %s\n' "$xray_link"
+            [[ -z "$mtproto_link" ]] || printf 'Telegram Proxy: %s\n' "$mtproto_link"
+        } >"$credentials_tmp")
+        root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
+        if [[ "$QUICK_UI" != true ]]; then
+            first_user_details="$TEMP_DIR/first-user-details.txt"
+            root_exec "$BINARY_PATH" user show "$FIRST_USER_NAME" >"$first_user_details" || \
+                fail "first-user keys could not be rendered"
+            chmod 0600 "$first_user_details"
+            if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
+                {
+                    printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
+                    [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
+                    printf '\nBase user, subscription content and access keys:\n'
+                    cat "$first_user_details"
+                    printf '\nSubscription QR:\n'
+                } >/dev/tty
+                root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
+            else
+                printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
             fi
-        else
-            credentials_file="$DATA_DIR/bootstrap-$FIRST_USER_NAME.txt"
-            credentials_tmp="$TEMP_DIR/bootstrap.txt"
-            (umask 077; {
-                printf 'HTTPS subscription: %s\n' "$subscription_url"
-                if [[ "$TLS_MODE" == "private-ca" ]]; then
-                    printf 'Private CA: %s/tls/ca/current/ca.crt\n' "$DATA_DIR"
-                else
-                    printf "TLS: Let's Encrypt (%s)\n" "$PUBLIC_HOST"
-                fi
-                [[ -z "$mtproto_link" ]] || printf 'MTProto: %s\n' "$mtproto_link"
-                printf '\nBase user, subscription content and access keys:\n'
-                cat "$first_user_details"
-            } >"$credentials_tmp")
-            root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
-            printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
         fi
     fi
 fi
@@ -1855,6 +1910,38 @@ if [[ "$TELEMT_ONLY" == true ]]; then
     fi
 fi
 
+if [[ "$QUICK_UI" == true ]]; then
+    [[ "$LANGUAGE" == "ru" ]] && progress 100 "Готово" || progress 100 "Done"
+    [[ -t 3 ]] && printf '\n' >&3
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        printf '\nГотово\n\n' >&3
+        if [[ -n "$subscription_url" ]]; then
+            printf '  Подписка\n  %s\n\n' "$subscription_url" >&3
+            printf '  QR-код подписки\n\n' >&3
+        fi
+    else
+        printf '\nDone\n\n' >&3
+        if [[ -n "$subscription_url" ]]; then
+            printf '  Subscription\n  %s\n\n' "$subscription_url" >&3
+            printf '  Subscription QR code\n\n' >&3
+        fi
+    fi
+    if [[ -n "$token_file" ]]; then
+        root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >&3
+    fi
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        [[ -z "$hysteria_link" ]] || printf '\n  Ключ Hysteria 2\n  %s\n' "$hysteria_link" >&3
+        [[ -z "$xray_link" ]] || printf '\n  Ключ Xray REALITY\n  %s\n' "$xray_link" >&3
+        [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
+    else
+        [[ -z "$hysteria_link" ]] || printf '\n  Hysteria 2 key\n  %s\n' "$hysteria_link" >&3
+        [[ -z "$xray_link" ]] || printf '\n  Xray REALITY key\n  %s\n' "$xray_link" >&3
+        [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
+    fi
+    printf '\n' >&3
+    exit 0
+fi
+
 printf '\n%s\n' "$DONE_TEXT"
 printf '  xraydo: %s\n' "$BINARY_PATH"
 printf '  config: %s\n' "$CONFIG_PATH"
@@ -1867,7 +1954,7 @@ if [[ "$FIRST_USER_MODE" == "skip" ]]; then
     printf '  first user: skipped; no credentials or subscription were created\n'
 else
     if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
-        printf '  first user: %s; limits=unlimited, devices=1\n' "$FIRST_USER_NAME"
+        printf '  first user: %s; limits=unlimited\n' "$FIRST_USER_NAME"
     else
         printf '  first user: %s; limits=%s, duration=%s, traffic=%s, devices=1, IP=%s\n' \
             "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
