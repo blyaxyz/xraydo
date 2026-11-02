@@ -6,30 +6,13 @@ Hysteria 2 и Telemt на Linux-сервере. Проект работает к
 
 - мастер установки на русском и английском;
 - единое меню для пользователей, ключей, TLS, обновления и удаления;
-- Xray REALITY с целью `ya.ru` по умолчанию;
 - Hysteria 2 и Telegram MTProxy на базе Telemt;
 - сертификаты Let's Encrypt для домена или публичного IP;
 - короткие ID пользователей и числовые алиасы;
 - подписки, QR-коды, аудит и резервные копии;
 - защищённый control plane между master и node.
 
-> [!IMPORTANT]
-> Установщик ниже загружается из текущей ветки `master`. Перед запуском на
-> важном сервере рекомендуется просмотреть `install.sh` и сделать backup.
-
-## Быстрый старт
-
-Требуется Linux-сервер с root-доступом. Поддерживаются `apt`, `dnf`, `yum`,
-`zypper` и `apk`, архитектуры `amd64` и `arm64`.
-
-### Через curl
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-bash ./install.sh
-```
-
-Одной командой:
+## Быстрый старт curl
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o install.sh && bash ./install.sh
@@ -38,10 +21,9 @@ curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/in
 ### Через wget
 
 ```bash
-wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-bash ./install.sh
-```
+wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh && bash ./install.sh
 
+```
 Установщик проверит окружение, доставит зависимости, установит выбранные ядра,
 создаст systemd/OpenRC-службы и откроет меню `xraydo`.
 
@@ -55,7 +37,7 @@ bash ./install.sh
 
 Для большинства пользователей подходит `quick`. После его выбора установщик
 больше ничего не спрашивает: автоматически ставит все три ядра, настраивает
-REALITY с `ya.ru`, Telemt на `8443` с Fake TLS `vk.com`, выпускает сертификат
+REALITY, Telemt на `8443` с Fake TLS, выпускает сертификат
 Let's Encrypt на определённый публичный IP и создаёт пользователя `default`.
 В конце он выводит подписку и все готовые ключи.
 
@@ -68,8 +50,7 @@ Let's Encrypt на определённый публичный IP и созда�
 sudo bash ./install.sh --telemt-only
 ```
 
-Мастер спросит только язык, порт (например, `8443`) и Fake TLS-домен (например,
-`vk.com`). Публичный адрес, пользователь `hello`, конфигурация, служба и
+Мастер спросит только язык, порт (например, `8443`) и Fake TLS-домен. Публичный адрес, пользователь `hello`, конфигурация, служба и
 автозапуск настраиваются автоматически. В конце появятся готовые ссылки:
 
 ```text
@@ -125,40 +106,13 @@ sudo xraydo key show ACCESS_KEY_ID --redact  # скрыть credentials
 Пользователю назначаются короткий семисимвольный ID и дополнительный числовой
 алиас. В командах можно использовать имя, короткий ID или числовой алиас.
 
-Частые операции:
-
-```bash
-sudo xraydo user set-enabled alice false
-sudo xraydo user set-enabled alice true
-sudo xraydo user rename alice alice-new
-sudo xraydo user set-note alice-new "Телефон"
-sudo xraydo user search alice
-```
-
-Перед удалением можно проверить план:
-
-```bash
-sudo xraydo user delete-plan alice-new
-sudo xraydo user delete alice-new
-sudo xraydo user delete-status alice-new
-```
-
-Создание пользователя выполняется локально и не ждёт сетевого REALITY-скана.
-Сканирование и смена цели запускаются отдельно.
-
 ## Xray REALITY
 
-Цель и SNI по умолчанию — `ya.ru`:
+Цель и SNI:
 
 ```bash
-sudo xraydo reality scan --target ya.ru --sni ya.ru
+sudo xraydo reality scan --target primer.ru --sni primer.ru
 xraydo reality configure --help
-```
-
-Цель можно явно задать при установке:
-
-```bash
-sudo bash ./install.sh --reality-target ya.ru
 ```
 
 ## Подписки и QR-коды
@@ -221,17 +175,6 @@ sudo xraydo system purge --yes      # удалить все данные xraydo
 > `purge` необратимо удаляет пользователей, ключи, TLS-данные, логи и state.
 > Сначала проверьте `--dry-run` и сделайте резервную копию.
 
-## Неинтерактивная установка
-
-```bash
-sudo bash ./install.sh --non-interactive --yes --lang ru
-sudo bash ./install.sh --non-interactive --yes --answers answers.example
-bash ./install.sh --dry-run --non-interactive
-```
-
-Файл ответов имеет строгий формат `KEY=VALUE`: неизвестные параметры
-отклоняются, сам файл не исполняется как shell-код.
-
 ## Master → node
 
 Установите профиль `master` на управляющем сервере и `node` на остальных.
@@ -282,37 +225,5 @@ cd xraydo
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 bash tests/test_install.sh
 ```
-
-Локальный запуск без установки:
-
-```bash
-PYTHONPATH=src XRAYDO_DATA_DIR=/tmp/xraydo-dev python3 -m xraydo.cli --help
-```
-
 План работ: [TODO.md](TODO.md). История изменений: [CHANGELOG.md](CHANGELOG.md).
 Поддерживаемые Linux-системы: [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
-
-## English quick start
-
-Download the installer from the current `master` branch and run it as root:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-chmod +x install.sh
-sudo bash ./install.sh
-```
-
-Or use wget:
-
-```bash
-wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
-chmod +x install.sh
-sudo bash ./install.sh
-```
-
-Choose `quick` for a fully automatic single-server installation. There are no
-more questions after that selection; the installer prints the subscription and
-all client keys when it finishes. Choose `advanced` when you need custom roles,
-cores, TLS, ports, or user limits. Then run `sudo xraydo` for the interactive
-menu, `sudo xraydo status` for health information, or `xraydo --help` for the
-complete CLI reference.
