@@ -4,7 +4,7 @@ The integration follows the official `telemt/telemt` release and configuration
 layout, but does not execute its remote installer.
 
 - Source: <https://github.com/telemt/telemt>
-- Binary: pinned `3.5.14` GNU/musl archive selected by architecture and libc.
+- Binary: pinned `3.5.16` GNU/musl archive selected by architecture and libc.
 - Integrity: the SHA-256 published beside each official release archive is
   embedded in `install.sh` and checked before extraction.
 - Account: isolated `xraydo-telemt` system user without a login shell.
@@ -36,7 +36,11 @@ sudo xraydo telemt restart
 They detect systemd or OpenRC without invoking a shell. `status`, `version`,
 and `logs` have stable JSON output through the global `--json` option.
 
-Advanced configuration exposes only fields verified against Telemt 3.5.14:
+Telemt 3.5.16 is required because upstream versions after 3.5.14 fixed stalled
+middle-proxy relays and unflushed adaptive relay writes. The old behavior could
+complete the client and upstream handshake while carrying no useful traffic.
+
+Advanced configuration exposes only fields verified against Telemt 3.5.16:
 
 ```sh
 xraydo core telemt --user bob --server proxy.example.com \

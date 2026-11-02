@@ -40,12 +40,12 @@ set -Eeuo pipefail
 # This file is intentionally self-contained. It can be downloaded on its own;
 # no checkout of the repository is required.
 readonly INSTALLER_VERSION="0.2.0"
-readonly XRAYDO_REF="19c9b45124e431f9deba480fc6c79e7c4d4120f4"
-readonly XRAYDO_ARCHIVE_SHA256="4b3ad2b7a9e0cbe4c69c069eec57628685cf24c32e80fdd96bc8d6a54f427a50"
+readonly XRAYDO_REF="5bf0d749dde2dede22e6d24d02b92b3aace64280"
+readonly XRAYDO_ARCHIVE_SHA256="85a0fb984a2e7beda0b261a35d9b745b717158cd7888e00542679e6a2bae6f43"
 readonly XRAYDO_ARCHIVE_URL="https://github.com/blyaxyz/xraydo/archive/${XRAYDO_REF}.tar.gz"
 readonly XRAY_VERSION="v26.10.31"
 readonly HYSTERIA_VERSION="app/v2.13.0"
-readonly TELEMT_VERSION="3.5.14"
+readonly TELEMT_VERSION="3.5.16"
 
 LANGUAGE=""
 PREFIX="/usr/local"
@@ -1173,10 +1173,10 @@ if [[ ",$CORES," == *,telemt,* ]]; then
     fi
     if [[ "$ARCH" == "amd64" ]]; then
         telemt_arch="x86_64"
-        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="b10f86c6851f5c422a49d98deea55e8ef4aea7879605e59c1d4aa43c8f4c70ce" || telemt_checksum="71c1454f79cf755edea0985500629daba553002f9863be754e8e38a418822773"
+        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="e6f46b2f3becf29bfd555cec8a059e429f7c082c1af402499b3a7940cf8ebd34" || telemt_checksum="05d7c32eff5990285657408cf383614d845ecc06aac0d5adc02a86d72c907146"
     else
         telemt_arch="aarch64"
-        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="d2e3ca6a3f407aecb190c4a73db74ec581d56b5dd6ab469cb0e1d0f2c3d31c57" || telemt_checksum="21795430c4165cf964405459714d08eea319edaa5c9027beac4de373c356d84d"
+        [[ "$telemt_libc" == "gnu" ]] && telemt_checksum="1e1bc87f05923b9673cbbaf34a3e50f7fdcf7d496cd24efcdb34c278ed18a659" || telemt_checksum="33d7b2aa55f8852ddcc59e0fa8f5ad9bca3ce94d9fea6665b918e9ae91820ae3"
     fi
     telemt_asset="telemt-$telemt_arch-linux-$telemt_libc.tar.gz"
     telemt_archive="$TEMP_DIR/$telemt_asset"

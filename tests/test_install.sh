@@ -18,8 +18,13 @@ export -f uname apt-get qrencode
 
 [[ "$("$ROOT_DIR/install.sh" --version)" == "0.2.0" ]]
 grep -q 'readonly XRAY_VERSION="v26.10.31"' "$ROOT_DIR/install.sh"
+grep -q 'readonly TELEMT_VERSION="3.5.16"' "$ROOT_DIR/install.sh"
 grep -q 'e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214' "$ROOT_DIR/install.sh"
 grep -q '1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d' "$ROOT_DIR/install.sh"
+grep -q 'e6f46b2f3becf29bfd555cec8a059e429f7c082c1af402499b3a7940cf8ebd34' "$ROOT_DIR/install.sh"
+grep -q '05d7c32eff5990285657408cf383614d845ecc06aac0d5adc02a86d72c907146' "$ROOT_DIR/install.sh"
+grep -q '1e1bc87f05923b9673cbbaf34a3e50f7fdcf7d496cd24efcdb34c278ed18a659' "$ROOT_DIR/install.sh"
+grep -q '33d7b2aa55f8852ddcc59e0fa8f5ad9bca3ce94d9fea6665b918e9ae91820ae3' "$ROOT_DIR/install.sh"
 
 answers="$TEMP_DIR/answers"
 printf '%s\n' \
