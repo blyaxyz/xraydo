@@ -1623,6 +1623,7 @@ token_file=""
 xray_link=""
 hysteria_link=""
 mtproto_link=""
+mtproto_https_link=""
 xray_state="not selected"
 hysteria_state="not selected"
 telemt_state="not selected"
@@ -1780,6 +1781,39 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         subscription_service_started=true
     fi
 
+    # Collect every client link once after service health checks. A selected,
+    # healthy core without a link is an incomplete installation, not an item
+    # that may be silently omitted from the final screen.
+    if [[ "$xray_state" == "configured and healthy" || "$hysteria_state" == "configured and healthy" ]]; then
+        subscription_json="$TEMP_DIR/subscription.json"
+        root_exec "$BINARY_PATH" --json subscription show "$FIRST_USER_NAME" >"$subscription_json" || \
+            fail "first-user protocol links could not be rendered"
+        chmod 0600 "$subscription_json"
+        xray_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d.get("subscription",d); print(next((x.get("uri","") for x in s.get("entries",[]) if x.get("protocol") == "xray_reality"), ""))' "$subscription_json")"
+        hysteria_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d.get("subscription",d); print(next((x.get("uri","") for x in s.get("entries",[]) if x.get("protocol") == "hysteria2"), ""))' "$subscription_json")"
+    fi
+    if [[ "$telemt_state" == "configured and healthy" ]]; then
+        telemt_json="$TEMP_DIR/telemt-links.json"
+        root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" || \
+            fail "Telemt connection links could not be rendered"
+        chmod 0600 "$telemt_json"
+        mtproto_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x.get("uri","") for x in d.get("links",[]) if x.get("format") == "tg_uri"), ""))' "$telemt_json")"
+        mtproto_https_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x.get("uri","") for x in d.get("links",[]) if x.get("format") == "https_uri"), ""))' "$telemt_json")"
+    fi
+
+    [[ "$xray_state" != "configured and healthy" || -n "$xray_link" ]] || \
+        fail "Xray is healthy, but its client link is missing"
+    [[ "$hysteria_state" != "configured and healthy" || -n "$hysteria_link" ]] || \
+        fail "Hysteria is healthy, but its client link is missing"
+    [[ "$telemt_state" != "configured and healthy" || ( -n "$mtproto_link" && -n "$mtproto_https_link" ) ]] || \
+        fail "Telemt is healthy, but its Telegram Proxy links are missing"
+    [[ "$xray_state" == "configured and healthy" ]] || xray_link=""
+    [[ "$hysteria_state" == "configured and healthy" ]] || hysteria_link=""
+    if [[ "$telemt_state" != "configured and healthy" ]]; then
+        mtproto_link=""
+        mtproto_https_link=""
+    fi
+
     if [[ "$first_user_created" == true && "$TELEMT_ONLY" != true ]]; then
         token_file="$TEMP_DIR/subscription-token"
         (umask 077; printf '%s' "$subscription_token" >"$token_file")
@@ -1790,17 +1824,6 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             quiet_root_retry "subscription token protocol health-check" 12 1 \
                 "${subscription_token_probe[@]}" || fail "generated subscription URL returned an error"
         fi
-        telemt_json="$TEMP_DIR/telemt-links.json"
-        root_exec "$BINARY_PATH" --json telemt link "$FIRST_USER_NAME" >"$telemt_json" 2>/dev/null || printf '{"links":[]}' >"$telemt_json"
-        chmod 0600 "$telemt_json"
-        mtproto_link="$(sed -n 's/.*"uri": "\(tg:\/\/proxy?[^"]*\)".*/\1/p' "$telemt_json" | head -n 1)"
-        subscription_json="$TEMP_DIR/subscription.json"
-        root_exec "$BINARY_PATH" --json subscription show "$FIRST_USER_NAME" >"$subscription_json" || \
-            fail "first-user keys could not be rendered"
-        chmod 0600 "$subscription_json"
-        xray_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x["uri"] for x in d["subscription"]["entries"] if x.get("protocol") == "xray_reality"), ""))' "$subscription_json")"
-        hysteria_link="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next((x["uri"] for x in d["subscription"]["entries"] if x.get("protocol") == "hysteria2"), ""))' "$subscription_json")"
-
         credentials_file="$DATA_DIR/bootstrap-$FIRST_USER_NAME.txt"
         credentials_tmp="$TEMP_DIR/bootstrap.txt"
         (umask 077; {
@@ -1808,28 +1831,27 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             [[ -z "$hysteria_link" ]] || printf 'Hysteria 2: %s\n' "$hysteria_link"
             [[ -z "$xray_link" ]] || printf 'Xray REALITY: %s\n' "$xray_link"
             [[ -z "$mtproto_link" ]] || printf 'Telegram Proxy: %s\n' "$mtproto_link"
+            [[ -z "$mtproto_https_link" ]] || printf 'Telegram Proxy HTTPS: %s\n' "$mtproto_https_link"
         } >"$credentials_tmp")
         root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
         if [[ "$QUICK_UI" != true ]]; then
-            first_user_details="$TEMP_DIR/first-user-details.txt"
-            root_exec "$BINARY_PATH" user show "$FIRST_USER_NAME" >"$first_user_details" || \
-                fail "first-user keys could not be rendered"
-            chmod 0600 "$first_user_details"
             if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
                 if [[ "$LANGUAGE" == "ru" ]]; then
                     {
                         printf '\nHTTPS-подписка (показывается один раз):\n%s\n' "$subscription_url"
-                        [[ -z "$mtproto_link" ]] || printf '\nСсылка MTProto:\n%s\n' "$mtproto_link"
-                        printf '\nБазовый пользователь, содержимое подписки и ключи доступа:\n'
-                        cat "$first_user_details"
+                        [[ -z "$xray_link" ]] || printf '\nКлюч Xray REALITY:\n%s\n' "$xray_link"
+                        [[ -z "$hysteria_link" ]] || printf '\nКлюч Hysteria 2:\n%s\n' "$hysteria_link"
+                        [[ -z "$mtproto_link" ]] || printf '\nTelegram Proxy:\n%s\n' "$mtproto_link"
+                        [[ -z "$mtproto_https_link" ]] || printf '\nTelegram Proxy HTTPS:\n%s\n' "$mtproto_https_link"
                         printf '\nQR-код подписки:\n'
                     } >/dev/tty
                 else
                     {
                         printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
-                        [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
-                        printf '\nBase user, subscription content, and access keys:\n'
-                        cat "$first_user_details"
+                        [[ -z "$xray_link" ]] || printf '\nXray REALITY key:\n%s\n' "$xray_link"
+                        [[ -z "$hysteria_link" ]] || printf '\nHysteria 2 key:\n%s\n' "$hysteria_link"
+                        [[ -z "$mtproto_link" ]] || printf '\nTelegram Proxy:\n%s\n' "$mtproto_link"
+                        [[ -z "$mtproto_https_link" ]] || printf '\nTelegram Proxy HTTPS:\n%s\n' "$mtproto_https_link"
                         printf '\nSubscription QR code:\n'
                     } >/dev/tty
                 fi
@@ -1915,10 +1937,12 @@ if [[ "$QUICK_UI" == true ]]; then
         [[ -z "$hysteria_link" ]] || printf '\n  Ключ Hysteria 2\n  %s\n' "$hysteria_link" >&3
         [[ -z "$xray_link" ]] || printf '\n  Ключ Xray REALITY\n  %s\n' "$xray_link" >&3
         [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
+        [[ -z "$mtproto_https_link" ]] || printf '\n  Telegram Proxy HTTPS\n  %s\n' "$mtproto_https_link" >&3
     else
         [[ -z "$hysteria_link" ]] || printf '\n  Hysteria 2 key\n  %s\n' "$hysteria_link" >&3
         [[ -z "$xray_link" ]] || printf '\n  Xray REALITY key\n  %s\n' "$xray_link" >&3
         [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
+        [[ -z "$mtproto_https_link" ]] || printf '\n  Telegram Proxy HTTPS\n  %s\n' "$mtproto_https_link" >&3
     fi
     printf '\n' >&3
     exit 0

@@ -7,6 +7,9 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Changed
 
+- Fixed the installer completion screen so the subscription is printed once and
+  healthy Xray, Hysteria, and Telemt services always expose their client links;
+  both Telegram Proxy URL formats are also stored in bootstrap credentials.
 - Reworked the README into a Russian-first, task-oriented guide and changed the
   bootstrap examples from a release asset to the current `master` installer,
   with both curl and wget commands.
