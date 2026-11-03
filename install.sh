@@ -1615,8 +1615,8 @@ if [[ "$QUICK_UI" == true ]]; then
     [[ "$LANGUAGE" == "ru" ]] && progress 70 "Службы и автозапуск" || progress 70 "Services and autostart"
 fi
 
-first_user_created=false
 subscription_service_started=false
+first_user_existing=false
 subscription_token=""
 subscription_url=""
 token_file=""
@@ -1660,13 +1660,13 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     root_exec "$BINARY_PATH" --json user list >"$users_json"
     chmod 0600 "$users_json"
     if grep -Fq "\"name\": \"$FIRST_USER_NAME\"" "$users_json"; then
-        printf '  first user: existing user %s preserved; token was not rotated\n' "$FIRST_USER_NAME"
+        first_user_existing=true
+        printf '  first user: existing user %s preserved\n' "$FIRST_USER_NAME"
     else
         user_json="$TEMP_DIR/first-user.json"
         (umask 077; root_exec "$BINARY_PATH" --json user create "$FIRST_USER_NAME" >"$user_json")
         subscription_token="$(sed -n 's/.*"subscription_token": "\([^"]*\)".*/\1/p' "$user_json")"
         [[ -n "$subscription_token" ]] || fail "first user was created but its one-time token could not be captured"
-        first_user_created=true
     fi
 
     keys_json="$TEMP_DIR/access-keys.json"
@@ -1691,9 +1691,15 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --listen-port "$xray_port" \
             --target "$REALITY_TARGET" --sni "$REALITY_TARGET" \
             --fingerprint "$UTLS_PROFILE" --config "$CONFIG_DIR/cores/xray/config.json"; then
-            if start_core_service xray; then xray_state="configured and healthy"; else xray_state="configured; service health failed"; fi
+            if start_core_service xray; then
+                xray_state="configured and healthy"
+            else
+                xray_state="configured; service health failed"
+                fail "Xray configuration was created, but its service health-check failed"
+            fi
         else
             xray_state="failed; endpoint not published"
+            fail "Xray REALITY configuration failed"
         fi
     fi
 
@@ -1731,9 +1737,15 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$hysteria_port" \
             --stats-port "$hysteria_stats_port" --cert "$hysteria_cert" --key "$hysteria_key" \
             --config "$CONFIG_DIR/cores/hysteria/config.yaml" "${ech_args[@]}"; then
-            if start_core_service hysteria; then hysteria_state="configured and healthy"; else hysteria_state="configured; service health failed"; fi
+            if start_core_service hysteria; then
+                hysteria_state="configured and healthy"
+            else
+                hysteria_state="configured; service health failed"
+                fail "Hysteria configuration was created, but its service health-check failed"
+            fi
         else
             hysteria_state="failed; endpoint not published"
+            fail "Hysteria configuration failed"
         fi
     fi
 
@@ -1742,9 +1754,15 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$telemt_port" \
             --api-port "$telemt_api_port" --tls-domain "$TELEMT_TLS_DOMAIN" \
             --config "$CONFIG_DIR/cores/telemt/telemt.toml"; then
-            if start_core_service telemt; then telemt_state="configured and healthy"; else telemt_state="configured; service health failed"; fi
+            if start_core_service telemt; then
+                telemt_state="configured and healthy"
+            else
+                telemt_state="configured; service health failed"
+                fail "Telemt configuration was created, but its service health-check failed"
+            fi
         else
             telemt_state="failed; endpoint not published"
+            fail "Telemt configuration failed"
         fi
     fi
     if [[ "$QUICK_UI" == true ]]; then
@@ -1814,7 +1832,20 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         mtproto_https_link=""
     fi
 
-    if [[ "$first_user_created" == true && "$TELEMT_ONLY" != true ]]; then
+    # Existing subscription tokens are stored only as hashes. Rotate only after
+    # every selected core and client link has passed validation, so a failed
+    # reinstall never invalidates the currently working subscription.
+    if [[ "$first_user_existing" == true && "$TELEMT_ONLY" != true ]]; then
+        rotated_subscription_json="$TEMP_DIR/rotated-subscription.json"
+        (umask 077; root_exec "$BINARY_PATH" --json subscription rotate \
+            "$FIRST_USER_NAME" >"$rotated_subscription_json") || \
+            fail "existing first-user subscription token could not be rotated"
+        subscription_token="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("token", ""))' "$rotated_subscription_json")"
+        [[ -n "$subscription_token" ]] || \
+            fail "existing first-user subscription token could not be captured"
+    fi
+
+    if [[ -n "$subscription_token" && "$TELEMT_ONLY" != true ]]; then
         token_file="$TEMP_DIR/subscription-token"
         (umask 077; printf '%s' "$subscription_token" >"$token_file")
         subscription_url="$subscription_base/sub/$subscription_token"
@@ -1828,8 +1859,8 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         credentials_tmp="$TEMP_DIR/bootstrap.txt"
         (umask 077; {
             [[ "$LANGUAGE" == "ru" ]] && printf 'Подписка: %s\n' "$subscription_url" || printf 'Subscription: %s\n' "$subscription_url"
-            [[ -z "$hysteria_link" ]] || printf 'Hysteria 2: %s\n' "$hysteria_link"
             [[ -z "$xray_link" ]] || printf 'Xray REALITY: %s\n' "$xray_link"
+            [[ -z "$hysteria_link" ]] || printf 'Hysteria 2: %s\n' "$hysteria_link"
             [[ -z "$mtproto_link" ]] || printf 'Telegram Proxy: %s\n' "$mtproto_link"
             [[ -z "$mtproto_https_link" ]] || printf 'Telegram Proxy HTTPS: %s\n' "$mtproto_https_link"
         } >"$credentials_tmp")
@@ -1838,24 +1869,41 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
                 if [[ "$LANGUAGE" == "ru" ]]; then
                     {
-                        printf '\nHTTPS-подписка (показывается один раз):\n%s\n' "$subscription_url"
-                        [[ -z "$xray_link" ]] || printf '\nКлюч Xray REALITY:\n%s\n' "$xray_link"
-                        [[ -z "$hysteria_link" ]] || printf '\nКлюч Hysteria 2:\n%s\n' "$hysteria_link"
-                        [[ -z "$mtproto_link" ]] || printf '\nTelegram Proxy:\n%s\n' "$mtproto_link"
-                        [[ -z "$mtproto_https_link" ]] || printf '\nTelegram Proxy HTTPS:\n%s\n' "$mtproto_https_link"
-                        printf '\nQR-код подписки:\n'
+                        printf '\n====================================================================\n'
+                        printf '                     УСТАНОВКА ЗАВЕРШЕНА\n'
+                        printf '====================================================================\n\n'
+                        printf 'ПОДПИСКА\n%s\n\nQR-КОД ПОДПИСКИ\n\n' "$subscription_url"
                     } >/dev/tty
                 else
                     {
-                        printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
-                        [[ -z "$xray_link" ]] || printf '\nXray REALITY key:\n%s\n' "$xray_link"
-                        [[ -z "$hysteria_link" ]] || printf '\nHysteria 2 key:\n%s\n' "$hysteria_link"
-                        [[ -z "$mtproto_link" ]] || printf '\nTelegram Proxy:\n%s\n' "$mtproto_link"
-                        [[ -z "$mtproto_https_link" ]] || printf '\nTelegram Proxy HTTPS:\n%s\n' "$mtproto_https_link"
-                        printf '\nSubscription QR code:\n'
+                        printf '\n====================================================================\n'
+                        printf '                     INSTALLATION COMPLETE\n'
+                        printf '====================================================================\n\n'
+                        printf 'SUBSCRIPTION\n%s\n\nSUBSCRIPTION QR CODE\n\n' "$subscription_url"
                     } >/dev/tty
                 fi
                 root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
+                if [[ "$LANGUAGE" == "ru" ]]; then
+                    {
+                        [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link"
+                        [[ -z "$hysteria_link" ]] || printf '\nHYSTERIA 2\n%s\n' "$hysteria_link"
+                        if [[ -n "$mtproto_link" ]]; then
+                            printf '\nTELEGRAM PROXY\n%s\n%s\n' "$mtproto_link" "$mtproto_https_link"
+                        fi
+                        printf '\nКопия сохранена: %s\n' "$credentials_file"
+                        printf '====================================================================\n'
+                    } >/dev/tty
+                else
+                    {
+                        [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link"
+                        [[ -z "$hysteria_link" ]] || printf '\nHYSTERIA 2\n%s\n' "$hysteria_link"
+                        if [[ -n "$mtproto_link" ]]; then
+                            printf '\nTELEGRAM PROXY\n%s\n%s\n' "$mtproto_link" "$mtproto_https_link"
+                        fi
+                        printf '\nCredentials copy: %s\n' "$credentials_file"
+                        printf '====================================================================\n'
+                    } >/dev/tty
+                fi
             else
                 if [[ "$LANGUAGE" == "ru" ]]; then
                     printf '  одноразовые учётные данные: %s (безопасно перенесите, затем удалите)\n' "$credentials_file"
@@ -1915,36 +1963,46 @@ if [[ "$TELEMT_ONLY" == true ]]; then
 fi
 
 if [[ "$QUICK_UI" == true ]]; then
+    [[ -n "$subscription_url" && -n "$token_file" ]] || \
+        fail "installation completed without a subscription URL or QR token"
+    [[ ",$CORES," != *,xray,* || -n "$xray_link" ]] || \
+        fail "installation completed without an Xray REALITY key"
+    [[ ",$CORES," != *,hysteria,* || -n "$hysteria_link" ]] || \
+        fail "installation completed without a Hysteria 2 key"
+    [[ ",$CORES," != *,telemt,* || ( -n "$mtproto_link" && -n "$mtproto_https_link" ) ]] || \
+        fail "installation completed without Telegram Proxy links"
     [[ "$LANGUAGE" == "ru" ]] && progress 100 "Готово" || progress 100 "Done"
     [[ -t 3 ]] && printf '\n' >&3
     if [[ "$LANGUAGE" == "ru" ]]; then
-        printf '\nГотово\n\n' >&3
-        if [[ -n "$subscription_url" ]]; then
-            printf '  Подписка\n  %s\n\n' "$subscription_url" >&3
-            printf '  QR-код подписки\n\n' >&3
-        fi
+        printf '\n====================================================================\n' >&3
+        printf '                     УСТАНОВКА ЗАВЕРШЕНА\n' >&3
+        printf '====================================================================\n\n' >&3
+        printf 'ПОДПИСКА\n%s\n\n' "$subscription_url" >&3
+        printf 'QR-КОД ПОДПИСКИ\n\n' >&3
     else
-        printf '\nDone\n\n' >&3
-        if [[ -n "$subscription_url" ]]; then
-            printf '  Subscription\n  %s\n\n' "$subscription_url" >&3
-            printf '  Subscription QR code\n\n' >&3
-        fi
+        printf '\n====================================================================\n' >&3
+        printf '                     INSTALLATION COMPLETE\n' >&3
+        printf '====================================================================\n\n' >&3
+        printf 'SUBSCRIPTION\n%s\n\n' "$subscription_url" >&3
+        printf 'SUBSCRIPTION QR CODE\n\n' >&3
     fi
-    if [[ -n "$token_file" ]]; then
-        root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >&3
-    fi
+    root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >&3
     if [[ "$LANGUAGE" == "ru" ]]; then
-        [[ -z "$hysteria_link" ]] || printf '\n  Ключ Hysteria 2\n  %s\n' "$hysteria_link" >&3
-        [[ -z "$xray_link" ]] || printf '\n  Ключ Xray REALITY\n  %s\n' "$xray_link" >&3
-        [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
-        [[ -z "$mtproto_https_link" ]] || printf '\n  Telegram Proxy HTTPS\n  %s\n' "$mtproto_https_link" >&3
+        [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link" >&3
+        [[ -z "$hysteria_link" ]] || printf '\nHYSTERIA 2\n%s\n' "$hysteria_link" >&3
+        if [[ -n "$mtproto_link" ]]; then
+            printf '\nTELEGRAM PROXY\n%s\n%s\n' "$mtproto_link" "$mtproto_https_link" >&3
+        fi
+        printf '\nКопия всех данных: %s\n' "$credentials_file" >&3
     else
-        [[ -z "$hysteria_link" ]] || printf '\n  Hysteria 2 key\n  %s\n' "$hysteria_link" >&3
-        [[ -z "$xray_link" ]] || printf '\n  Xray REALITY key\n  %s\n' "$xray_link" >&3
-        [[ -z "$mtproto_link" ]] || printf '\n  Telegram Proxy URL\n  %s\n' "$mtproto_link" >&3
-        [[ -z "$mtproto_https_link" ]] || printf '\n  Telegram Proxy HTTPS\n  %s\n' "$mtproto_https_link" >&3
+        [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link" >&3
+        [[ -z "$hysteria_link" ]] || printf '\nHYSTERIA 2\n%s\n' "$hysteria_link" >&3
+        if [[ -n "$mtproto_link" ]]; then
+            printf '\nTELEGRAM PROXY\n%s\n%s\n' "$mtproto_link" "$mtproto_https_link" >&3
+        fi
+        printf '\nCredentials copy: %s\n' "$credentials_file" >&3
     fi
-    printf '\n' >&3
+    printf '====================================================================\n\n' >&3
     exit 0
 fi
 

@@ -25,10 +25,9 @@ releases. It works on a single server or in a protected master → node setup.
 
 **Paste this command into your terminal or Command Prompt, replacing the username and IP address with your host’s details. Enter your password, and you’re done.**
 
-```ssh username@ipaddres 'curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o /tmp/install.sh && sudo bash /tmp/install.sh --quick'
-```
+ssh username@ipaddres 'curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o /tmp/install.sh && sudo bash /tmp/install.sh --quick'
 
-## Quick installation
+## or Quick installation
 
 Download the current installer directly from the `master` branch and run it:
 
