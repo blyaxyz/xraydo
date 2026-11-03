@@ -1,83 +1,97 @@
+<p align="center">
+  <a href="./README.md"><img alt="English" src="https://img.shields.io/badge/Language-English-2563eb?style=for-the-badge"></a>
+  <a href="./README.ru.md"><img alt="Русский" src="https://img.shields.io/badge/Язык-Русский-64748b?style=for-the-badge"></a>
+</p>
+
 # xraydo
 
-`xraydo` — интерактивная панель и CLI для установки и управления Xray,
-Hysteria 2 и Telemt на актуальных Debian и Ubuntu Server. Проект работает как
-на одном сервере, так и в схеме master → node.
+`xraydo` is an interactive control panel and command-line tool for installing
+and managing Xray, Hysteria 2, and Telemt on supported Debian and Ubuntu Server
+releases. It works on a single server or in a protected master → node setup.
 
-- мастер установки на русском и английском;
-- единое меню для пользователей, ключей, TLS, обновления и удаления;
-- Hysteria 2 и Telegram MTProxy на базе Telemt;
-- сертификаты Let's Encrypt для домена или публичного IP;
-- короткие ID пользователей и числовые алиасы;
-- подписки, QR-коды, аудит и резервные копии;
-- защищённый control plane между master и node.
+## Highlights
 
-## Быстрый старт curl
+- one-command quick installation and a configurable advanced mode;
+- one menu for users, access keys, subscriptions, TLS, updates, and removal;
+- Xray REALITY, Hysteria 2, and Telemt-based Telegram MTProxy;
+- Let's Encrypt certificates for a domain or a supported public IP address;
+- short seven-character user IDs plus convenient numeric aliases;
+- subscription links, QR codes, audit logs, and backups;
+- authenticated and replay-protected master → node control plane;
+- English and Russian installer and CLI interfaces.
+
+## Quick installation
+
+Download the current installer directly from the `master` branch and run it:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o install.sh && bash ./install.sh
+curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh -o install.sh
+sudo bash ./install.sh
 ```
 
-### Через wget
+Or use `wget`:
 
 ```bash
-wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh && bash ./install.sh
-
+wget -O install.sh https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/install.sh
+sudo bash ./install.sh
 ```
-Установщик проверит окружение, доставит зависимости, установит выбранные ядра,
-создаст systemd-службы и откроет меню `xraydo`.
 
-## Что выбрать в установщике
+The installer checks the operating system, installs the required dependencies
+and selected cores, creates systemd services, and opens the `xraydo` menu.
 
-| Сценарий | Профиль | Когда использовать |
+## Installation modes
+
+| Mode | Select or run | Best for |
 |---|---|---|
-| Быстрая установка | `quick` | Один сервер, полностью автоматически |
-| Продвинутая установка | `advanced` | Роль standalone/master/node и ручные параметры |
-| Только Telegram Proxy | `--telemt-only` | Xray и Hysteria не нужны |
+| Quick installation | `quick` | A single server with fully automatic setup |
+| Advanced installation | `advanced` | Custom roles, cores, TLS, ports, and limits |
+| Telegram Proxy only | `--telemt-only` | A server that only needs Telemt/MTProxy |
 
-Для большинства пользователей подходит `quick`. После его выбора установщик
-больше ничего не спрашивает: автоматически ставит все три ядра, настраивает
-REALITY, Telemt на `8443` с Fake TLS, выпускает сертификат
-Let's Encrypt на определённый публичный IP и создаёт пользователя `default`.
-В конце он выводит подписку и все готовые ключи.
+Quick installation is the recommended choice for most users. It does not ask
+for additional settings: xraydo installs all three cores, configures REALITY,
+runs Telemt with Fake TLS on port `8443`, obtains a Let's Encrypt certificate
+for the detected public address when supported, and creates the unlimited
+`default` user. The final screen contains the subscription URL, its QR code,
+and all client links.
 
-Для домена, схемы master → node, другого набора ядер, TLS, портов или лимитов
-выберите `advanced`: все ручные настройки собраны только в этом сценарии.
+Choose advanced installation when you need a domain, a standalone/master/node
+role, different cores, custom ports, TLS settings, or user limits.
 
-## Только Telemt / Telegram Proxy
+## Telegram Proxy only
 
 ```bash
 sudo bash ./install.sh --telemt-only
 ```
 
-Мастер спросит только язык, порт (например, `8443`) и Fake TLS-домен. Публичный адрес, пользователь `hello`, конфигурация, служба и
-автозапуск настраиваются автоматически. В конце появятся готовые ссылки:
+This setup asks only for the interface language, listening port, and Fake TLS
+domain. It detects the public address and configures the `hello` user, service,
+and autostart automatically. The result includes both link formats:
 
 ```text
 tg://proxy?server=...&port=...&secret=...
 https://t.me/proxy?server=...&port=...&secret=...
 ```
 
-Копия ссылок сохраняется с правами `0600` в `/var/lib/xraydo`. Если выбранный
-порт занят другой программой, установщик сообщит об этом и не заменит его без
-вашего ведома.
+A private copy is stored with `0600` permissions under `/var/lib/xraydo`. If
+the chosen port is already in use, the installer reports the conflict instead
+of silently selecting another port.
 
-## Первые шаги
+## First steps
 
 ```bash
-sudo xraydo                 # открыть интерактивное меню
-sudo xraydo status          # проверить компоненты
-sudo xraydo system status   # проверить установку
-xraydo --help               # показать весь CLI
+sudo xraydo                 # open the interactive menu
+sudo xraydo status          # check component and protocol health
+sudo xraydo system status   # inspect the installation
+xraydo --help               # list all CLI commands
 ```
 
-Меню покрывает повседневный lifecycle: создание и удаление пользователей,
-ключи, подписки, TLS, сервисы, обновление, деинсталляцию и полную очистку.
-При входе в раздел пользователей список выводится сразу. После выбора
-пользователя открывается карточка с комментарием, подпиской, всеми ключами и
-действиями над этим пользователем без повторного ввода имени или ID.
+The interactive menu covers the same routine administration as the CLI:
+users, keys, subscriptions, TLS, services, updates, uninstallation, and full
+removal. The Users section immediately shows the user list. Selecting a user
+opens a complete card with comments, subscription, client links, credentials,
+and available actions.
 
-## Пользователи
+## Users and access keys
 
 ```bash
 sudo xraydo user create alice
@@ -85,42 +99,43 @@ sudo xraydo user list
 sudo xraydo user show alice
 ```
 
-`user show` — административная команда: она выводит комментарий, состояние и
-содержимое подписки, а также все credentials и клиентские ссылки пользователя.
-Вывод содержит секреты, поэтому его не следует отправлять в публичные журналы.
+`user show` is an administrative command. It displays the user's comment,
+status, subscription contents, credentials, and client links. Its output
+contains secrets and must not be pasted into public logs or chats.
 
-Ключи также можно посмотреть напрямую без сокращения вывода:
+Access keys can also be inspected directly:
 
 ```bash
 sudo xraydo key list --user alice --full
 sudo xraydo key show ACCESS_KEY_ID
-sudo xraydo key show ACCESS_KEY_ID --redact  # скрыть credentials
+sudo xraydo key show ACCESS_KEY_ID --redact  # hide credentials
 ```
 
-При создании ключа xraydo один раз определяет публичный IP через HTTPS
-GeoIP, уточняет страну сети через RDAP, сохраняет результат локально и добавляет локацию в
-название: `🇩🇪 Германия · phone`. Это же имя попадает в remark
-клиентской ссылки. Если GeoIP временно недоступен, ключ всё равно создаётся с
-исходным именем; автоматические флаги можно отключить через настройки.
-Проверить и принудительно обновить локацию можно командой:
+When a key is created, xraydo detects the server's public IP over HTTPS,
+cross-checks the network country with RDAP, caches the result, and adds the
+location to the key name, for example `🇵🇱 Poland · phone`. The same label is
+used as the client-link remark. A temporary GeoIP failure never blocks key
+creation, and automatic location labels can be disabled in settings.
+
+Check or refresh the detected location with:
 
 ```bash
 sudo xraydo country location --refresh
 ```
 
-Пользователю назначаются короткий семисимвольный ID и дополнительный числовой
-алиас. В командах можно использовать имя, короткий ID или числовой алиас.
+Each user receives a seven-character ID and a numeric alias. Commands accept
+the username, short ID, or numeric alias.
 
 ## Xray REALITY
 
-Цель и SNI:
+Inspect a REALITY target and configure the service with:
 
 ```bash
-sudo xraydo reality scan --target primer.ru --sni primer.ru
+sudo xraydo reality scan --target ya.ru --sni ya.ru
 xraydo reality configure --help
 ```
 
-## Подписки и QR-коды
+## Subscriptions and QR codes
 
 ```bash
 sudo xraydo subscription create alice
@@ -130,16 +145,17 @@ sudo xraydo subscription rotate alice
 sudo xraydo subscription revoke alice
 ```
 
-Секреты и bootstrap-данные не пишутся в общий журнал. В неинтерактивном режиме
-одноразовые данные сохраняются в root-only файл, путь к которому выводится после
-установки. При создании базового пользователя этот файл содержит HTTPS-подписку,
-полную карточку пользователя и его ключи.
+Secrets and bootstrap data are excluded from the shared journal. In
+non-interactive mode, one-time credentials are written to a root-only file and
+the installer prints its path. For the initial user, this file contains the
+HTTPS subscription, full user card, and access keys.
 
-## TLS и Let's Encrypt
+## TLS and Let's Encrypt
 
-Установочный quiz предлагает сертификат для домена или публичного IP и
-запрашивает email. Для IP-сертификатов требуется Certbot 5.4 или новее; если
-пакет дистрибутива устарел, установщик использует актуальный Certbot через snap.
+The advanced setup quiz can request a certificate for a domain or supported
+public IP address and asks for an email address. IP certificates require
+Certbot 5.4 or newer; when the distribution package is too old, the installer
+uses the current snap package.
 
 ```bash
 sudo xraydo tls status
@@ -147,11 +163,11 @@ sudo xraydo tls acme-issue --identifier example.com --email admin@example.com
 sudo xraydo tls acme-renew --identifier example.com
 ```
 
-Установщик добавляет timer `xraydo-certbot-renew.timer` и deploy-hook. После
-продления сертификат импортируется, а зависимые сервисы перезапускаются. Для
-проверки ACME публичный TCP-порт 80 должен быть доступен.
+The installer enables `xraydo-certbot-renew.timer` and a deploy hook. After a
+successful renewal, xraydo imports the certificate and restarts dependent
+services. Public TCP port 80 must be reachable for the ACME challenge.
 
-## Компоненты
+## Services and components
 
 ```bash
 sudo xraydo status
@@ -161,30 +177,31 @@ sudo xraydo inbound list
 sudo xraydo key list --user alice
 ```
 
-Подробные подкоманды доступны через `--help`, например `xraydo telemt --help`.
+Use `--help` on any command group, for example `xraydo telemt --help`, to see
+all available actions.
 
-## Обновление и удаление
+## Update and removal
 
-Исходный `install.sh` искать не нужно: установленная команда `xraydo` содержит
-полный lifecycle.
+You do not need the original `install.sh` after installation. The installed
+`xraydo` command provides the complete lifecycle:
 
 ```bash
 sudo xraydo system update --dry-run
 sudo xraydo system update --yes
-sudo xraydo system uninstall --yes  # сохранить конфигурацию и state
+sudo xraydo system uninstall --yes  # keep configuration and state
 sudo xraydo system purge --dry-run
-sudo xraydo system purge --yes      # удалить все данные xraydo
+sudo xraydo system purge --yes      # remove all xraydo data
 ```
 
 > [!CAUTION]
-> `purge` необратимо удаляет пользователей, ключи, TLS-данные, логи и state.
-> Сначала проверьте `--dry-run` и сделайте резервную копию.
+> `purge` permanently removes users, keys, TLS data, logs, and state. Review
+> the dry run and create a backup first.
 
 ## Master → node
 
-Установите профиль `master` на управляющем сервере и `node` на остальных.
-Control plane использует взаимную аутентификацию, ограниченные по времени
-токены, защиту от replay и аудит операций.
+Install the `master` profile on the management server and the `node` profile
+on managed servers. The control plane uses mutual authentication, short-lived
+tokens, replay protection, and an audit trail.
 
 ```bash
 xraydo control --help
@@ -193,10 +210,10 @@ xraydo node --help
 xraydo sync --help
 ```
 
-Не публикуйте control endpoint без firewall: разрешайте подключения только с
-доверенных адресов master/node.
+Do not expose the control endpoint to the whole internet. Restrict it with a
+firewall to trusted master and node addresses.
 
-## Диагностика
+## Diagnostics
 
 ```bash
 sudo xraydo status
@@ -206,23 +223,24 @@ journalctl -u xraydo-xray -n 100 --no-pager
 systemctl status xraydo-certbot-renew.timer
 ```
 
-Основные данные находятся в `/var/lib/xraydo`, конфигурация — в `/etc/xraydo`,
-журналы установки — в `/var/log/xraydo`. Приватные ключи, state и одноразовые
-credentials должны оставаться доступными только root.
+Runtime data is stored in `/var/lib/xraydo`, configuration in `/etc/xraydo`,
+and installation logs in `/var/log/xraydo`. Private keys, state, and one-time
+credentials must remain accessible only to root.
 
-## Безопасность
+## Security
 
-- запускайте административные команды через `sudo`;
-- не отправляйте пароли, ключи и subscription URL в публичные чаты;
-- ограничьте управляющие порты firewall;
-- проверяйте `xraydo audit list` и резервные копии;
-- удаляйте ненужные bootstrap-файлы после импорта;
-- перед обновлением просматривайте изменения в `install.sh`.
+- run administrative commands through `sudo`;
+- never share passwords, access keys, or subscription URLs publicly;
+- restrict management ports with a firewall;
+- review `xraydo audit list` and test backups regularly;
+- remove bootstrap files after importing their contents;
+- review installer changes before running an update.
 
-Порядок сообщения об уязвимостях: [SECURITY.md](SECURITY.md).
-Проверка подписей, SBOM и provenance релиза: [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and
+[docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md) for release signatures, SBOM, and
+provenance verification.
 
-## Разработка и тесты
+## Development and tests
 
 ```bash
 git clone https://github.com/blyaxyz/xraydo.git
@@ -230,5 +248,7 @@ cd xraydo
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 bash tests/test_install.sh
 ```
-План работ: [TODO.md](TODO.md). История изменений: [CHANGELOG.md](CHANGELOG.md).
-Поддерживаемые Debian/Ubuntu: [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
+
+- [Supported Debian and Ubuntu releases](docs/SUPPORT_MATRIX.md)
+- [Roadmap and remaining work](TODO.md)
+- [Changelog](CHANGELOG.md)
