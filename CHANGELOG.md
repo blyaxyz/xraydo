@@ -20,6 +20,16 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Added
 
+- Node-scoped certificate issue/list/renew/replace/revoke/delete/assignment; private
+  keys are queued only for the authenticated target node.
+- Unattended usage/IP collection, policy enforcement, desired-state reconciliation,
+  and rollout reconciliation through `xraydo automation`.
+- Per-IP and per-token subscription rate limiting, failed-token bans, and a mandatory
+  CI gate for HTTPS and mTLS socket tests.
+- Verified Xray install/update/check-update/history/rollback/backup management.
+- WSS/TLS guided configuration with SAN checks, secure generated paths, remote TCP/UDP
+  port probes, transactional REALITY shortId/SpiderX rotation, and shared canary rollouts.
+
 - A `--telemt-only` three-question installer flow for language, exact public
   port, and Fake TLS domain. It creates/reuses `hello`, validates and starts the
   service automatically, then prints and securely stores both Telegram links.

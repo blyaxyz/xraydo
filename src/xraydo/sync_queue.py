@@ -4,6 +4,7 @@ import copy
 import json
 import secrets
 import uuid
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -214,9 +215,12 @@ class SyncQueueService:
                         continue
                 except (TypeError, ValueError):
                     pass
-            dependency_id = operation.get("depends_on")
-            if dependency_id and not any(item["id"] == dependency_id and item["state"] == "applied"
-                                         for item in data.get("node_operations", [])):
+            dependency_value = operation.get("depends_on")
+            dependency_ids = ([dependency_value] if isinstance(dependency_value, str)
+                              else dependency_value if isinstance(dependency_value, list) else [])
+            applied_ids = {item["id"] for item in data.get("node_operations", [])
+                           if item["state"] == "applied"}
+            if dependency_ids and not set(dependency_ids).issubset(applied_ids):
                 continue
             operation["state"] = "delivering"
             operation["attempts"] += 1
@@ -312,6 +316,55 @@ class SyncQueueService:
                     records.append(reported)
                 else:
                     current.update(reported)
+        if not error and operation.get("resource_type") in {"inbound", "reality_rotation"}:
+            if not result or result.get("health") != "healthy":
+                raise ValueError("sync_health_ack_required")
+            payload = operation.get("payload") or {}
+            inbound = next((item for item in data.get("inbounds", [])
+                            if item.get("id") == operation.get("resource_id")
+                            and item.get("node_id") == operation.get("node_id")), None)
+            if inbound is not None and inbound.get("revision") == payload.get(
+                    "base_revision", payload.get("expected_revision")):
+                if isinstance(payload.get("config"), dict):
+                    inbound["config"] = copy.deepcopy(payload["config"])
+                    inbound["client_settings"] = copy.deepcopy(
+                        payload.get("client_settings", inbound.get("client_settings", {})))
+                desired_state = payload.get("desired_state")
+                if desired_state in {"enabled", "disabled", "deleted"}:
+                    inbound["state"] = desired_state
+                inbound["revision"] += 1
+                inbound["updated_at"] = _now()
+                inbound["last_apply"] = {"state": "working", "at": _now(),
+                                         "health": "healthy", "operation_id": operation["id"]}
+                data.setdefault("inbound_versions", []).append({
+                    "id": str(uuid.uuid4()), "inbound_id": inbound["id"],
+                    "node_id": inbound["node_id"], "revision": inbound["revision"],
+                    "action": operation["resource_type"] + ".ack", "status": "working",
+                    "config": copy.deepcopy(inbound["config"]), "remark": inbound["remark"],
+                    "client_settings": copy.deepcopy(inbound.get("client_settings", {})),
+                    "state": inbound["state"], "created_at": _now(),
+                })
+                short_ids = inbound.get("config", {}).get("streamSettings", {}).get(
+                    "realitySettings", {}).get("shortIds", [])
+                spider_x = inbound.get("client_settings", {}).get("spider_x")
+                for key in data.get("access_keys", []):
+                    for endpoint in key.get("endpoints", {}).values():
+                        if endpoint.get("inbound_id") != inbound["id"] or endpoint.get(
+                                "node_id", "local") != inbound["node_id"]:
+                            continue
+                        endpoint["inbound_revision"] = inbound["revision"]
+                        endpoint["enabled"] = inbound["state"] == "enabled"
+                        uri = endpoint.get("uri")
+                        if isinstance(uri, str) and (short_ids or spider_x):
+                            parsed = urllib.parse.urlsplit(uri)
+                            query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                            replacements = {"sid": short_ids[0] if short_ids else None,
+                                            "spx": spider_x}
+                            query = [(name, replacements.get(name) or value)
+                                     for name, value in query]
+                            endpoint["uri"] = urllib.parse.urlunsplit(
+                                parsed._replace(query=urllib.parse.urlencode(query)))
+                        key["updated_at"] = _now()
         self.store.save(data)
         return operation
 

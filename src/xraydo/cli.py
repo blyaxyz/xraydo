@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from .access_keys import AccessKeyService
+from .automation import AutomationService
 from .acme import CertbotManager
 from .countries import (
     detect_countries,
@@ -23,6 +24,7 @@ from .countries import (
     load_countries,
 )
 from .control_plane import ControlPKI, ControlPlaneService, serve_control_plane
+from .certificates import NodeCertificateService
 from .health import core_health, overall_health
 from .hysteria import configure_hysteria
 from .hysteria_manager import HysteriaManager
@@ -47,6 +49,7 @@ from .telemt import configure_telemt
 from .telemt_manager import TelemtManager
 from .terminal_ui import error as render_error, response as render_response
 from .tls_manager import TLSManager
+from .xray_manager import XrayManager
 from .users import UserService
 
 
@@ -241,6 +244,15 @@ def parser() -> argparse.ArgumentParser:
     state_compact.add_argument("--operation-days", type=int)
     state_compact.add_argument("--max-records", type=int)
 
+    automation = commands.add_parser("automation", help="scheduled usage and desired-state sync")
+    automation_commands = automation.add_subparsers(dest="automation_command", required=True)
+    automation_run = automation_commands.add_parser("run")
+    automation_run.add_argument("--once", action="store_true")
+    automation_run.add_argument("--interval", type=int)
+    automation_configure = automation_commands.add_parser("configure")
+    automation_configure.add_argument("value", choices=("on", "off"))
+    automation_configure.add_argument("--interval", type=int, default=60)
+
     system = commands.add_parser("system", help="install, update, or remove xraydo")
     system_commands = system.add_subparsers(dest="system_command", required=True)
     system_status = system_commands.add_parser("status")
@@ -288,6 +300,10 @@ def parser() -> argparse.ArgumentParser:
     subscription_serve.add_argument("--cert", type=Path, required=True)
     subscription_serve.add_argument("--key", type=Path, required=True)
     subscription_serve.add_argument("--max-clients", type=int, default=8)
+    subscription_serve.add_argument("--rate-limit", type=int, default=30)
+    subscription_serve.add_argument("--rate-window", type=int, default=60)
+    subscription_serve.add_argument("--abuse-failures", type=int, default=10)
+    subscription_serve.add_argument("--abuse-ban", type=int, default=300)
 
     tls = commands.add_parser("tls")
     tls_commands = tls.add_subparsers(dest="tls_command", required=True)
@@ -350,6 +366,35 @@ def parser() -> argparse.ArgumentParser:
     tls_verify_backup = tls_commands.add_parser("verify-backup")
     tls_verify_backup.add_argument("--input", type=Path, required=True)
     tls_verify_backup.add_argument("--passphrase-file", type=Path, required=True)
+    tls_node_list = tls_commands.add_parser("node-list")
+    tls_node_list.add_argument("--node")
+    tls_node_issue = tls_commands.add_parser("node-issue")
+    tls_node_issue.add_argument("--node", required=True)
+    tls_node_issue.add_argument("--domain", action="append", default=[])
+    tls_node_issue.add_argument("--ip", action="append", default=[])
+    tls_node_issue.add_argument("--days", type=int, default=90)
+    tls_node_issue.add_argument("--renew-percent", type=int, default=67)
+    tls_node_renew = tls_commands.add_parser("node-renew")
+    tls_node_renew.add_argument("certificate_id")
+    tls_node_renew.add_argument("--force", action="store_true")
+    tls_node_replace = tls_commands.add_parser("node-replace")
+    tls_node_replace.add_argument("certificate_id")
+    tls_node_replace.add_argument("--cert", type=Path, required=True)
+    tls_node_replace.add_argument("--key", type=Path, required=True)
+    tls_node_replace.add_argument("--ca", type=Path)
+    tls_node_replace.add_argument("--chain", type=Path)
+    tls_node_replace.add_argument("--domain", action="append", default=[])
+    tls_node_replace.add_argument("--ip", action="append", default=[])
+    for action in ("node-revoke", "node-delete"):
+        command = tls_commands.add_parser(action)
+        command.add_argument("certificate_id")
+        command.add_argument("--yes", action="store_true")
+        if action == "node-delete":
+            command.add_argument("--force", action="store_true")
+    tls_node_assign = tls_commands.add_parser("node-assign")
+    tls_node_assign.add_argument("certificate_id")
+    tls_node_assign.add_argument("inbound_id")
+    tls_node_assign.add_argument("--plan", action="store_true")
 
     key = commands.add_parser("key", aliases=["keys"])
     key_commands = key.add_subparsers(dest="key_command", required=True)
@@ -492,6 +537,31 @@ def parser() -> argparse.ArgumentParser:
     inbound_bulk = inbound_commands.add_parser("bulk-edit")
     inbound_bulk.add_argument("--target", action="append", required=True, metavar="NODE:INBOUND")
     inbound_bulk.add_argument("--set", action="append", required=True, dest="assignments", metavar="PATH=VALUE")
+    inbound_wss = inbound_commands.add_parser("wss-tls")
+    inbound_wss.add_argument("--node", default="local")
+    inbound_wss.add_argument("--port", type=int, required=True)
+    inbound_wss.add_argument("--public-address", required=True)
+    inbound_wss.add_argument("--sni", action="append", required=True)
+    inbound_wss.add_argument("--http-host", required=True)
+    inbound_wss.add_argument("--path")
+    inbound_wss.add_argument("--alpn", action="append")
+    inbound_wss.add_argument("--cert", type=Path, required=True)
+    inbound_wss.add_argument("--key", type=Path, required=True)
+    inbound_wss.add_argument("--remark", default="WSS/TLS")
+    inbound_probe = inbound_commands.add_parser("probe-port")
+    inbound_probe.add_argument("--node", default="local")
+    inbound_probe.add_argument("--listen", default="0.0.0.0")
+    inbound_probe.add_argument("--port", type=int, required=True)
+    inbound_probe.add_argument("--transport", choices=("tcp", "udp"), default="tcp")
+    inbound_rotate_plan = inbound_commands.add_parser("rotation-plan")
+    inbound_rotate_plan.add_argument("inbound_id")
+    inbound_rotate_plan.add_argument("--node")
+    inbound_rotate_plan.add_argument("--output", type=Path)
+    inbound_rotate_apply = inbound_commands.add_parser("rotation-apply")
+    inbound_rotate_apply.add_argument("--plan-file", type=Path, required=True)
+    inbound_rotate_apply.add_argument("--yes", action="store_true")
+    inbound_rotate_apply.add_argument("--config-path", type=Path)
+    inbound_rotate_apply.add_argument("--xray-binary")
 
     reality_cli = commands.add_parser("reality", help="scan and configure REALITY targets")
     reality_commands = reality_cli.add_subparsers(dest="reality_command", required=True)
@@ -686,6 +756,27 @@ def parser() -> argparse.ArgumentParser:
     hysteria_backup.add_argument("--node", default="local")
     hysteria_backup.add_argument("--config", type=Path, required=True)
     hysteria_backup.add_argument("--output", type=Path, required=True)
+
+    xray_admin = commands.add_parser("xray", help="install and manage Xray per node")
+    xray_commands = xray_admin.add_subparsers(dest="xray_command", required=True)
+    for action in ("install", "update"):
+        command = xray_commands.add_parser(action)
+        command.add_argument("--node", default="local")
+        command.add_argument("--version")
+        command.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/xray"))
+        command.add_argument("--canary", type=int, default=1)
+        command.add_argument("--max-unavailable", type=int, default=1)
+    for action in ("version", "history", "check-update"):
+        command = xray_commands.add_parser(action)
+        command.add_argument("--node", default="local")
+    xray_rollback = xray_commands.add_parser("rollback")
+    xray_rollback.add_argument("--node", default="local")
+    xray_rollback.add_argument("--version")
+    xray_rollback.add_argument("--binary-path", type=Path, default=Path("/usr/local/bin/xray"))
+    xray_backup = xray_commands.add_parser("backup")
+    xray_backup.add_argument("--node", default="local")
+    xray_backup.add_argument("--config", type=Path, required=True)
+    xray_backup.add_argument("--output", type=Path, required=True)
     return result
 
 
@@ -1561,10 +1652,51 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     cert=args.cert,
                     key=args.key,
                     max_clients=args.max_clients,
+                    rate_limit_requests=args.rate_limit,
+                    rate_limit_window_seconds=args.rate_window,
+                    abuse_failures=args.abuse_failures,
+                    abuse_ban_seconds=args.abuse_ban,
                 )
+        elif args.command == "automation":
+            manager = AutomationService(store)
+            if args.automation_command == "configure":
+                result = manager.configure(enabled=args.value == "on",
+                                           interval_seconds=args.interval)
+            else:
+                result = manager.run(once=args.once, interval_seconds=args.interval)
+            emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
         elif args.command == "tls":
-            manager = TLSManager(store, args.dir)
-            if args.tls_command == "init-ca":
+            manager = TLSManager(store, getattr(args, "dir", None))
+            node_certificates = NodeCertificateService(store)
+            if args.tls_command == "node-list":
+                result = {"certificates": node_certificates.list(args.node)}
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-issue":
+                result = node_certificates.issue(args.node, domains=args.domain, ips=args.ip,
+                    days=args.days, renew_percent=args.renew_percent)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-renew":
+                result = node_certificates.renew(args.certificate_id, force=args.force)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-replace":
+                result = node_certificates.replace(args.certificate_id, cert=args.cert, key=args.key,
+                    domains=args.domain, ips=args.ip, ca_cert=args.ca, chain=args.chain)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-revoke":
+                if not args.yes:
+                    raise ValueError("confirmation_required")
+                result = node_certificates.revoke(args.certificate_id)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-delete":
+                if not args.yes:
+                    raise ValueError("confirmation_required")
+                result = node_certificates.delete(args.certificate_id, force=args.force)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "node-assign":
+                result = node_certificates.assign(args.certificate_id, args.inbound_id,
+                                                  apply=not args.plan)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.tls_command == "init-ca":
                 status = manager.init_ca()
                 emit(
                     {"tls": status},
@@ -1910,6 +2042,48 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             elif args.inbound_command == "show":
                 item = inbounds.show(args.inbound_id, node_id, secrets=args.show_secrets)
                 emit({"inbound": item}, json.dumps(item, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "wss-tls":
+                result = inbounds.guided_wss_tls(
+                    node_id=node_id or "local", port=args.port,
+                    public_address=args.public_address, sni=args.sni,
+                    http_host=args.http_host, path=args.path, alpn=args.alpn,
+                    certificate={"certificateFile": str(args.cert), "keyFile": str(args.key)},
+                    remark=args.remark,
+                )
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "probe-port":
+                result = inbounds.probe_port(node_id or "local", listen=args.listen,
+                                             port=args.port, transport=args.transport)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "rotation-plan":
+                result = inbounds.rotation_plan(args.inbound_id, node_id=node_id)
+                if args.output:
+                    args.output.parent.mkdir(parents=True, exist_ok=True)
+                    descriptor, filename = tempfile.mkstemp(prefix=".rotation-", dir=args.output.parent)
+                    temporary = Path(filename)
+                    try:
+                        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                            json.dump(result, handle, ensure_ascii=False, indent=2)
+                            handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+                        os.chmod(temporary, 0o600); os.replace(temporary, args.output)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command == "rotation-apply":
+                if not args.yes:
+                    raise ValueError("inbound_confirmation_required")
+                plan_text = read_secret_file(args.plan_file)
+                try:
+                    plan = json.loads(plan_text)
+                except json.JSONDecodeError as error:
+                    raise ValueError("inbound_invalid_document") from error
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if plan.get("node_id") == "local" and not binary:
+                    raise ValueError("xray_not_installed")
+                result = inbounds.rotate_reality(plan, confirm=True, binary=binary,
+                    config_path=args.config_path or config_root / "cores" / "xray" / "config.json")
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
             elif args.inbound_command == "edit":
                 current = inbounds.show(args.inbound_id, node_id, secrets=True)
                 proposed = inbound_edit_document(current["config"], args)
@@ -2209,6 +2383,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 result = manager.backup(args.node, args.config, args.output)
             else:
                 result = manager.service_many(command_name, args.node, getattr(args, "lines", 100))
+            emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+        elif args.command == "xray":
+            manager = XrayManager(store)
+            command_name = args.xray_command
+            if command_name in {"install", "update"}:
+                if args.node == "all":
+                    result = manager.install_many("all", version=args.version,
+                        canary=args.canary, max_unavailable=args.max_unavailable)
+                else:
+                    result = manager.install(args.node, version=args.version,
+                                             binary_path=args.binary_path)
+            elif command_name == "version":
+                result = manager.versions(args.node)
+            elif command_name == "history":
+                result = {"history": manager.history(args.node)}
+            elif command_name == "check-update":
+                result = manager.check_updates(args.node)
+            elif command_name == "rollback":
+                result = manager.rollback(args.node, version=args.version,
+                                          binary_path=args.binary_path)
+            else:
+                result = manager.backup(args.node, args.config, args.output)
             emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
         elif args.command == "core" and args.core_command == "reality":
             binary = shutil.which("xray")

@@ -7,6 +7,8 @@ import threading
 import time
 import urllib.parse
 import ipaddress
+import hashlib
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +19,84 @@ from .users import UserService
 
 MAX_REQUEST_LINE = 8192
 MAX_HEADERS = 16_384
+
+
+class SubscriptionRateLimiter:
+    """Bounded sliding-window limiter; identifiers are held as hashes only."""
+
+    def __init__(self, requests: int = 30, window_seconds: int = 60,
+                 failures: int = 10, ban_seconds: int = 300) -> None:
+        if not 1 <= requests <= 10_000 or not 1 <= window_seconds <= 3600:
+            raise ValueError("subscription_invalid_rate_limit")
+        if not 1 <= failures <= requests or not 1 <= ban_seconds <= 86_400:
+            raise ValueError("subscription_invalid_abuse_limit")
+        self.requests = requests; self.window_seconds = window_seconds
+        self.failures = failures; self.ban_seconds = ban_seconds
+        self.events: dict[str, deque[float]] = defaultdict(deque)
+        self.failed: dict[str, deque[float]] = defaultdict(deque)
+        self.banned_until: dict[str, float] = {}
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _key(kind: str, value: str) -> str:
+        return kind + ":" + hashlib.sha256(value.encode()).hexdigest()
+
+    def allow(self, address: str, token: Optional[str] = None) -> tuple[bool, int]:
+        now = time.monotonic()
+        keys = [self._key("ip", address)]
+        if token:
+            keys.append(self._key("token", token))
+        with self.lock:
+            retry = 0
+            for key in keys:
+                banned = self.banned_until.get(key, 0)
+                if banned > now:
+                    retry = max(retry, int(banned - now) + 1)
+                queue = self.events[key]
+                while queue and queue[0] <= now - self.window_seconds:
+                    queue.popleft()
+                if len(queue) >= self.requests:
+                    retry = max(retry, int(queue[0] + self.window_seconds - now) + 1)
+            if retry:
+                return False, retry
+            for key in keys:
+                self.events[key].append(now)
+            # Prevent unbounded growth under address spraying.
+            if len(self.events) > 20_000:
+                self._compact(now)
+            return True, 0
+
+    def failure(self, address: str) -> None:
+        now = time.monotonic(); key = self._key("ip", address)
+        with self.lock:
+            queue = self.failed[key]
+            while queue and queue[0] <= now - self.window_seconds:
+                queue.popleft()
+            queue.append(now)
+            if len(queue) >= self.failures:
+                self.banned_until[key] = now + self.ban_seconds
+
+    def success(self, address: str) -> None:
+        key = self._key("ip", address)
+        with self.lock:
+            self.failed.pop(key, None)
+
+    def _compact(self, now: float) -> None:
+        cutoff = now - max(self.window_seconds, self.ban_seconds)
+        for mapping in (self.events, self.failed):
+            for key in list(mapping):
+                queue = mapping[key]
+                while queue and queue[0] <= cutoff:
+                    queue.popleft()
+                if not queue:
+                    del mapping[key]
+        self.banned_until = {key: value for key, value in self.banned_until.items()
+                             if value > now}
+        for mapping in (self.events, self.failed):
+            while len(mapping) > 20_000:
+                del mapping[next(iter(mapping))]
+        while len(self.banned_until) > 20_000:
+            del self.banned_until[next(iter(self.banned_until))]
 
 
 def _certificate_name_matches(decoded: dict[str, Any], public_host: str) -> bool:
@@ -92,6 +172,7 @@ class SubscriptionTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer)
         cert: Path,
         key: Path,
         public_host: str,
+        rate_limiter: SubscriptionRateLimiter,
     ) -> None:
         self.context = context
         self.store = store
@@ -99,6 +180,7 @@ class SubscriptionTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer)
         self.cert = cert
         self.key = key
         self.public_host = public_host
+        self.rate_limiter = rate_limiter
         self.context_lock = threading.Lock()
         self.tls_revision = self._tls_revision()
         super().__init__(address, handler)
@@ -155,10 +237,11 @@ class SubscriptionTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer)
 class SubscriptionHandler(socketserver.BaseRequestHandler):
     server: SubscriptionTCPServer
 
-    def _response(self, status: int, body: bytes = b"") -> None:
+    def _response(self, status: int, body: bytes = b"", *, retry_after: int = 0) -> None:
         reasons = {
             200: "OK", 204: "No Content", 400: "Bad Request",
             404: "Not Found", 405: "Method Not Allowed", 414: "URI Too Long",
+            429: "Too Many Requests",
         }
         headers = [
             f"HTTP/1.1 {status} {reasons[status]}",
@@ -171,6 +254,8 @@ class SubscriptionHandler(socketserver.BaseRequestHandler):
             "",
             "",
         ]
+        if retry_after:
+            headers.insert(-2, f"Retry-After: {retry_after}")
         self.request.sendall("\r\n".join(headers).encode("ascii") + body)
 
     def handle(self) -> None:
@@ -207,16 +292,24 @@ class SubscriptionHandler(socketserver.BaseRequestHandler):
             self._response(404)
             return
         token = urllib.parse.unquote(parsed.path[len("/sub/"):])
+        address = str(self.client_address[0])
+        allowed, retry_after = self.server.rate_limiter.allow(address, token)
+        if not allowed:
+            self._response(429, retry_after=retry_after)
+            return
         users = UserService(self.server.store)
         user = users.verify_subscription_token(token)
         if user is None:
+            self.server.rate_limiter.failure(address)
             self._response(404)
             return
         try:
             body = SubscriptionService(self.server.store).render(user["id"], "base64").encode()
         except ValueError:
+            self.server.rate_limiter.failure(address)
             self._response(404)
             return
+        self.server.rate_limiter.success(address)
         self._response(200, body)
 
 
@@ -229,16 +322,22 @@ def create_subscription_server(
     cert: Path,
     key: Path,
     max_clients: int = 8,
+    rate_limit_requests: int = 30,
+    rate_limit_window_seconds: int = 60,
+    abuse_failures: int = 10,
+    abuse_ban_seconds: int = 300,
 ) -> SubscriptionTCPServer:
     if not 1 <= port <= 65_535:
         raise ValueError("subscription_invalid_port")
     if not 1 <= max_clients <= 64:
         raise ValueError("subscription_invalid_clients")
     context = tls_context(cert, key, public_host)
+    limiter = SubscriptionRateLimiter(rate_limit_requests, rate_limit_window_seconds,
+                                      abuse_failures, abuse_ban_seconds)
     try:
         return SubscriptionTCPServer(
             (listen, port), SubscriptionHandler, context, store, max_clients,
-            cert, key, public_host,
+            cert, key, public_host, limiter,
         )
     except OSError as error:
         raise ValueError("subscription_bind_failed") from error

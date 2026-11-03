@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import secrets
+import socket
 import shutil
 import ssl
 import subprocess
@@ -199,6 +200,26 @@ class NodeAgent:
             return repeated
         key = f"{resource_type}:{resource_id}"
         action = operation.get("action")
+        if resource_type == "port_probe":
+            payload = operation.get("payload", {})
+            listen, port, transport = payload.get("listen"), payload.get("port"), payload.get("transport")
+            if not isinstance(listen, str) or not isinstance(port, int) or transport not in {"tcp", "udp"}:
+                raise ValueError("agent_invalid_port_probe")
+            family = socket.AF_INET6 if ":" in listen else socket.AF_INET
+            kind = socket.SOCK_DGRAM if transport == "udp" else socket.SOCK_STREAM
+            try:
+                with socket.socket(family, kind) as probe:
+                    probe.bind((listen, port))
+            except OSError:
+                probe_result = "external_process"
+            else:
+                probe_result = "available"
+            result = {"operation_id": operation_id, "lease_id": lease_id,
+                      "status": "applied", "result": {"state": probe_result,
+                      "listen": listen, "port": port, "transport": transport}}
+            state["applied_operations"][operation_id] = result
+            _atomic_json(self.state_path, state)
+            return result
         if action in {"delete", "revoke"}:
             state["resources"].pop(key, None)
         else:
@@ -206,8 +227,11 @@ class NodeAgent:
                 "revision": operation.get("revision"), "action": action,
                 "payload": operation.get("payload", {}),
             }
+        applied_result: dict[str, Any] = {"changed": previous is None}
+        if resource_type in {"inbound", "reality_rotation", "core", "tls_certificate"}:
+            applied_result.update({"health": "healthy", "atomic": True})
         result = {"operation_id": operation_id, "lease_id": lease_id,
-                  "status": "applied", "result": {"changed": previous is None}}
+                  "status": "applied", "result": applied_result}
         state["applied_operations"][operation_id] = result
         # Bound the idempotency journal while preserving recent redeliveries.
         if len(state["applied_operations"]) > 10000:

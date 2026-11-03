@@ -25,6 +25,9 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install --disable-pip-version-check .
       - run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - name: Require HTTPS and mTLS network tests
+        if: matrix.python == '3.14'
+        run: PYTHONPATH=src python scripts/run_network_tests.py
 
   installer:
     runs-on: ubuntu-24.04

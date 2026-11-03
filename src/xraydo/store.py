@@ -64,6 +64,7 @@ class Store:
                 "role": configured_role(),
                 "node_health": {"failure_threshold": 3, "recovery_threshold": 2},
                 "next_user_numeric_id": 1,
+                "automation": {"enabled": True, "interval_seconds": 60, "last_run_at": None},
             },
             "users": [],
             "nodes": [],
@@ -86,6 +87,10 @@ class Store:
             "node_credentials": [],
             "control_nonces": [],
             "user_deletions": [],
+            "managed_certificates": [],
+            "certificate_assignments": [],
+            "automation_runs": [],
+            "rollouts": [],
         }
 
     @staticmethod
@@ -327,10 +332,17 @@ class Store:
         if "reality_checks" not in data:
             data["reality_checks"] = []
             changed = True
+        if "automation" not in data.setdefault("settings", {}):
+            data["settings"]["automation"] = {
+                "enabled": True, "interval_seconds": 60, "last_run_at": None,
+            }
+            changed = True
         for collection in ("inbounds", "inbound_versions", "node_cores", "core_versions",
                            "hysteria_diagnostics", "telemt_artifacts", "telemt_diagnostics",
                            "telemt_usage_cursors", "control_bootstrap_tokens",
-                           "node_credentials", "control_nonces", "user_deletions"):
+                           "node_credentials", "control_nonces", "user_deletions",
+                           "managed_certificates", "certificate_assignments",
+                           "automation_runs", "rollouts"):
             if collection not in data:
                 data[collection] = []
                 changed = True

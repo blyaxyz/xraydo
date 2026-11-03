@@ -24,7 +24,10 @@ PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 1024 * 1024
 MAX_CLOCK_SKEW_SECONDS = 120
 NONCE_LIFETIME_SECONDS = 300
-KNOWN_CAPABILITIES = {"access_key", "hysteria_user", "telemt_user"}
+KNOWN_CAPABILITIES = {
+    "access_key", "hysteria_user", "telemt_user", "core", "inbound",
+    "tls_certificate", "port_probe", "usage_collect", "reality_rotation",
+}
 
 
 def _now() -> datetime:

@@ -161,6 +161,9 @@ uses the current snap package.
 sudo xraydo tls status
 sudo xraydo tls acme-issue --identifier example.com --email admin@example.com
 sudo xraydo tls acme-renew --identifier example.com
+sudo xraydo tls node-list --node edge-1
+sudo xraydo tls node-issue --node edge-1 --domain vpn.example.com
+sudo xraydo tls node-assign CERTIFICATE_ID INBOUND_ID
 ```
 
 The installer enables `xraydo-certbot-renew.timer` and a deploy hook. After a
@@ -175,7 +178,19 @@ sudo xraydo telemt status
 sudo xraydo hysteria status
 sudo xraydo inbound list
 sudo xraydo key list --user alice
+sudo xraydo xray check-update --node all
+sudo xraydo xray install --node all --canary 1 --max-unavailable 2
+sudo xraydo inbound wss-tls --node edge-1 --port 443 \
+  --public-address vpn.example.com --sni vpn.example.com \
+  --http-host cdn.example.com --cert /path/server.crt --key /path/server.key
+sudo xraydo inbound probe-port --node edge-1 --port 443 --transport tcp
+sudo xraydo automation run --once
 ```
+
+The subscription HTTPS server applies per-address and per-token rate limits and
+temporarily bans repeated invalid-token attempts. REALITY rotations use
+`inbound rotation-plan` followed by `inbound rotation-apply`; subscription links
+change only after a healthy node ACK.
 
 Use `--help` on any command group, for example `xraydo telemt --help`, to see
 all available actions.

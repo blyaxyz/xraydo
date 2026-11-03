@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import socket
+import secrets
 import ssl
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from .reality import REALITY_FINGERPRINTS, RealityError, scan_target
 from .services import control_service, service_status
 from .store import Store
 from .sync_queue import enqueue_node_operation
+from .subscription_server import tls_context
 
 MASK = "***"
 SECRET_KEYS = {
@@ -302,6 +304,153 @@ class InboundService:
         self.store.save(data)
         return self.show(identifier, node_id)
 
+    def guided_wss_tls(
+        self, *, node_id: str, port: int, public_address: str,
+        sni: list[str], http_host: str, certificate: dict[str, str],
+        clients: Optional[list[dict[str, Any]]] = None, path: Optional[str] = None,
+        alpn: Optional[list[str]] = None, listen: str = "0.0.0.0",
+        remark: str = "WSS/TLS", register: bool = True,
+    ) -> dict[str, Any]:
+        """Build a safe WebSocket/TLS inbound while keeping client/server names separate."""
+        if not 1 <= port <= 65535:
+            raise InboundError("inbound_invalid_port")
+        if not public_address.strip() or any(ord(char) < 33 for char in public_address):
+            raise InboundError("inbound_invalid_public_address")
+        names = sorted({value.strip().rstrip(".").lower() for value in sni if value.strip()})
+        if not names or any("/" in value or len(value) > 253 for value in names):
+            raise InboundError("inbound_invalid_sni")
+        host = http_host.strip()
+        if not host or any(char in host for char in "\r\n/ "):
+            raise InboundError("inbound_invalid_http_host")
+        cert = Path(certificate.get("certificateFile", ""))
+        key = Path(certificate.get("keyFile", ""))
+        for name in names:
+            try:
+                tls_context(cert, key, name)
+            except ValueError as error:
+                raise InboundError("inbound_certificate_san_mismatch") from error
+        selected_alpn = alpn or ["http/1.1"]
+        if not selected_alpn or any(value not in {"http/1.1", "h2"} for value in selected_alpn):
+            raise InboundError("inbound_invalid_alpn")
+        if path is None:
+            path = "/" + secrets.token_urlsafe(18).rstrip("=")
+        if (not path.startswith("/") or len(path) > 256 or "?" in path or "#" in path
+                or any(ord(char) < 33 or ord(char) > 126 for char in path)):
+            raise InboundError("inbound_invalid_path")
+        config = {
+            "listen": listen, "port": port, "protocol": "vless", "tag": remark,
+            "settings": {"clients": copy.deepcopy(clients or []), "decryption": "none"},
+            "streamSettings": {
+                "network": "ws", "security": "tls",
+                "tlsSettings": {"serverName": names[0], "alpn": selected_alpn,
+                                "certificates": [{"certificateFile": str(cert),
+                                                  "keyFile": str(key)}]},
+                "wsSettings": {"path": path, "headers": {"Host": host}},
+            },
+        }
+        result: dict[str, Any] = {"config": config, "client": {
+            "address": public_address, "port": port, "sni": names[0],
+            "host": host, "path": path, "alpn": selected_alpn,
+        }}
+        if register:
+            created = self.register(node_id, config, remark=remark)
+            data = self.store.load()
+            item = next(value for value in data["inbounds"]
+                        if value["id"] == created["id"] and value["node_id"] == node_id)
+            item["client_settings"] = copy.deepcopy(result["client"])
+            self.store.save(data)
+            result["inbound"] = self.show(created["id"], node_id)
+        return result
+
+    def probe_port(self, node_id: str, *, listen: str, port: int,
+                   transport: str = "tcp") -> dict[str, Any]:
+        if transport not in {"tcp", "udp"} or not 1 <= port <= 65535:
+            raise InboundError("inbound_invalid_port_probe")
+        data = self.store.load()
+        def address_conflicts(existing: str) -> bool:
+            wildcard = {"0.0.0.0", "::", "[::]", ""}
+            same_family = (":" in existing) == (":" in listen)
+            return same_family and (existing == listen or existing in wildcard or listen in wildcard)
+
+        conflicts = [item for item in data.get("inbounds", [])
+                     if item["node_id"] == node_id and item.get("state") != "deleted"
+                     and address_conflicts(item["config"].get("listen", "0.0.0.0"))
+                     and item["config"].get("port") == port
+                     and ((item["config"].get("streamSettings", {}).get("network")
+                           in {"kcp", "quic"}) == (transport == "udp"))]
+        if conflicts:
+            return {"node_id": node_id, "listen": listen, "port": port,
+                    "transport": transport, "state": "managed_conflict",
+                    "inbound_id": conflicts[0]["id"]}
+        if node_id != "local":
+            operation = enqueue_node_operation(data, node_id, "port_probe", "probe", {
+                "listen": listen, "port": port, "transport": transport,
+            }, resource_id=f"{transport}:{listen}:{port}")
+            self.store.save(data)
+            return {"node_id": node_id, "listen": listen, "port": port,
+                    "transport": transport, "state": "pending_node_execution",
+                    "operation_id": operation["id"]}
+        family = socket.AF_INET6 if ":" in listen else socket.AF_INET
+        kind = socket.SOCK_DGRAM if transport == "udp" else socket.SOCK_STREAM
+        try:
+            with socket.socket(family, kind) as probe:
+                probe.bind((listen, port))
+        except OSError:
+            return {"node_id": node_id, "listen": listen, "port": port,
+                    "transport": transport, "state": "external_process"}
+        return {"node_id": node_id, "listen": listen, "port": port,
+                "transport": transport, "state": "available"}
+
+    def rotation_plan(self, inbound_id: str, *, node_id: Optional[str] = None) -> dict[str, Any]:
+        item = self.find(inbound_id, node_id)
+        reality = item["config"].get("streamSettings", {}).get("realitySettings")
+        if not isinstance(reality, dict):
+            raise InboundError("inbound_not_reality")
+        previous_ids = list(reality.get("shortIds", []))
+        previous_spider = item.get("client_settings", {}).get("spider_x", "/")
+        return {"rotation_id": str(uuid.uuid4()), "inbound_id": item["id"],
+                "node_id": item["node_id"], "base_revision": item["revision"],
+                "previous": {"short_ids": previous_ids, "spider_x": previous_spider},
+                "proposed": {"short_ids": [secrets.token_hex(8)],
+                             "spider_x": "/" + secrets.token_urlsafe(12).rstrip("=")},
+                "impact": {"subscription_update_after_ack": True,
+                           "connections_may_drop": True}}
+
+    def rotate_reality(self, plan: dict[str, Any], *, confirm: bool = False,
+                       binary: Optional[str] = None, config_path: Optional[Path] = None) -> dict[str, Any]:
+        if not confirm:
+            return {"state": "confirmation_required", "plan": copy.deepcopy(plan)}
+        item = self.find(plan["inbound_id"], plan["node_id"])
+        if item["revision"] != plan.get("base_revision"):
+            raise InboundError("inbound_revision_conflict")
+        new_config = copy.deepcopy(item["config"])
+        new_config["streamSettings"]["realitySettings"]["shortIds"] = plan["proposed"]["short_ids"]
+        client_settings = copy.deepcopy(item.get("client_settings", {}))
+        client_settings["spider_x"] = plan["proposed"]["spider_x"]
+        if item["node_id"] != "local":
+            data = self.store.load()
+            operation = enqueue_node_operation(data, item["node_id"], "reality_rotation", "apply", {
+                "rotation_id": plan["rotation_id"], "inbound_id": item["id"],
+                "base_revision": item["revision"], "config": new_config,
+                "client_settings": client_settings, "atomic": True,
+                "rollback_on_failure": True, "health_required": True,
+            }, resource_id=item["id"])
+            self.store.save(data)
+            return {"state": "pending_node_execution", "operation_id": operation["id"],
+                    "rotation_id": plan["rotation_id"]}
+        if not binary or not config_path:
+            raise InboundError("inbound_apply_context_required")
+        result = self.edit(item["id"], new_config, node_id=item["node_id"],
+                           expected_revision=item["revision"], apply=True,
+                           binary=binary, config_path=config_path)
+        if result.get("state") != "applied":
+            raise InboundError("reality_rotation_failed")
+        data = self.store.load(); stored = next(value for value in data["inbounds"]
+            if value["id"] == item["id"] and value["node_id"] == item["node_id"])
+        stored["client_settings"] = client_settings; self._update_subscriptions(data, stored)
+        self.store.save(data)
+        return {"state": "applied", "rotation_id": plan["rotation_id"], "result": result}
+
     def show(self, inbound_id: str, node_id: Optional[str] = None, *, secrets: bool = False) -> dict[str, Any]:
         data = self.store.load(); item = self.find(inbound_id, node_id, include_deleted=True)
         client_ids = self._client_ids(item["config"])
@@ -569,15 +718,24 @@ class InboundService:
                     endpoint["inbound_revision"] = item["revision"]
                     endpoint["enabled"] = item["state"] == "enabled"
                     fingerprint = item.get("client_settings", {}).get("fingerprint")
-                    if fingerprint:
+                    spider_x = item.get("client_settings", {}).get("spider_x")
+                    short_ids = item.get("config", {}).get("streamSettings", {}).get(
+                        "realitySettings", {}).get("shortIds", [])
+                    if fingerprint or spider_x or short_ids:
                         endpoint["fingerprint"] = fingerprint
                         uri = endpoint.get("uri")
                         if isinstance(uri, str):
                             parsed = urllib.parse.urlsplit(uri)
                             query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-                            query = [(name, fingerprint if name == "fp" else value) for name, value in query]
-                            if not any(name == "fp" for name, _value in query):
+                            replacements = {"fp": fingerprint, "spx": spider_x,
+                                            "sid": short_ids[0] if short_ids else None}
+                            query = [(name, replacements.get(name) or value) for name, value in query]
+                            if fingerprint and not any(name == "fp" for name, _value in query):
                                 query.append(("fp", fingerprint))
+                            if spider_x and not any(name == "spx" for name, _value in query):
+                                query.append(("spx", spider_x))
+                            if short_ids and not any(name == "sid" for name, _value in query):
+                                query.append(("sid", short_ids[0]))
                             endpoint["uri"] = urllib.parse.urlunsplit(
                                 parsed._replace(query=urllib.parse.urlencode(query))
                             )
