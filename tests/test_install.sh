@@ -42,7 +42,7 @@ output="$("$ROOT_DIR/install.sh" --answers "$answers" --dry-run --non-interactiv
 [[ "$output" == *'"cores":"xray"'* ]]
 [[ "$output" == *'Xray REALITY: TCP'* ]]
 [[ "$output" != *'Hysteria 2: UDP'* ]]
-[[ "$output" == *'Первый пользователь: skipped'* ]]
+[[ "$output" == *'Первый пользователь: пропущен'* ]]
 [[ "$output" == *'"first_user":"skip"'* ]]
 
 first_user_answers="$TEMP_DIR/first-user-answers"
@@ -67,7 +67,11 @@ printf '%s\n' \
     'HYSTERIA_ECH=decoy.example.com' > "$first_user_answers"
 
 first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dry-run --non-interactive)"
-[[ "$first_user_output" == *'First user / Первый пользователь: alice (custom)'* ]]
+[[ "$first_user_output" == *'First user: alice (custom)'* ]]
+if printf '%s' "$first_user_output" | grep -q '[А-Яа-яЁё]'; then
+    printf 'English installer output contains Russian text\n' >&2
+    exit 1
+fi
 [[ "$first_user_output" == *'duration=60d, traffic=250GB, devices=1, IP=3'* ]]
 [[ "$first_user_output" == *'REALITY uTLS: randomizednoalpn'* ]]
 [[ "$first_user_output" == *'REALITY target/SNI: ya.ru'* ]]
@@ -76,12 +80,12 @@ first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dr
 [[ "$first_user_output" != *'subscription_token'* ]]
 
 quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non-interactive)"
-[[ "$quick_output" == *'Profile / Профиль: quick'* ]]
-[[ "$quick_output" == *'Role / Роль: standalone'* ]]
+[[ "$quick_output" == *'Профиль: быстрая установка'* ]]
+[[ "$quick_output" == *'Роль: автономный сервер'* ]]
 [[ "$quick_output" == *'Ядра: xray,hysteria,telemt'* ]]
-[[ "$quick_output" == *'TLS: public-ip'* ]]
-[[ "$quick_output" == *'Первый пользователь: default (recommended)'* ]]
-[[ "$quick_output" == *'Limits / Лимиты: unlimited'* ]]
+[[ "$quick_output" == *'TLS: публичный IP'* ]]
+[[ "$quick_output" == *'Первый пользователь: default (рекомендуемый)'* ]]
+[[ "$quick_output" == *'Лимиты: без ограничений'* ]]
 [[ "$quick_output" != *'duration=30d, traffic=100GB'* ]]
 [[ "$quick_output" == *'REALITY target/SNI: ya.ru'* ]]
 [[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
@@ -89,7 +93,18 @@ quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non
 
 quick_en_output="$("$ROOT_DIR/install.sh" --profile quick --lang en --dry-run --non-interactive)"
 [[ "$quick_en_output" == *'Cores: xray,hysteria,telemt'* ]]
-[[ "$quick_en_output" != *'Ядра:'* ]]
+if printf '%s' "$quick_en_output" | grep -q '[А-Яа-яЁё]'; then
+    printf 'English quick-install output contains Russian text\n' >&2
+    exit 1
+fi
+[[ "$quick_en_output" == *'"language":"en"'* ]]
+
+default_language_output="$(XRAYDO_LANG= "$ROOT_DIR/install.sh" --profile quick --dry-run --non-interactive)"
+[[ "$default_language_output" == *'"language":"en"'* ]]
+if printf '%s' "$default_language_output" | grep -q '[А-Яа-яЁё]'; then
+    printf 'Default installer output is not English-only\n' >&2
+    exit 1
+fi
 
 printf 'ID=alpine\nVERSION_ID="3.21"\n' > "$TEMP_DIR/unsupported-os-release"
 if XRAYDO_OS_RELEASE="$TEMP_DIR/unsupported-os-release" \
@@ -103,8 +118,8 @@ telemt_only_output="$("$ROOT_DIR/install.sh" --telemt-only --lang ru \
 [[ "$telemt_only_output" == *'Ядра: telemt'* ]]
 [[ "$telemt_only_output" == *'Telemt: TCP 9443; TLS domain: vk.com'* ]]
 [[ "$telemt_only_output" == *'TLS: Telemt Fake TLS (vk.com)'* ]]
-[[ "$telemt_only_output" == *'Первый пользователь: hello (recommended)'* ]]
-[[ "$telemt_only_output" == *'Limits / Лимиты: unlimited'* ]]
+[[ "$telemt_only_output" == *'Первый пользователь: hello (рекомендуемый)'* ]]
+[[ "$telemt_only_output" == *'Лимиты: без ограничений'* ]]
 [[ "$telemt_only_output" != *'HTTPS subscription: TCP'* ]]
 [[ "$telemt_only_output" != *'ACME email:'* ]]
 [[ "$telemt_only_output" == *'"cores":"telemt"'* ]]
@@ -119,7 +134,7 @@ grep -q 'systemctl restart xraydo-subscription.service' "$ROOT_DIR/install.sh"
 grep -q 'subscription HTTPS protocol health-check' "$ROOT_DIR/install.sh"
 grep -q 'subscription token protocol health-check' "$ROOT_DIR/install.sh"
 grep -q 'user show "\$FIRST_USER_NAME"' "$ROOT_DIR/install.sh"
-grep -q 'Base user, subscription content and access keys' "$ROOT_DIR/install.sh"
+grep -q 'Base user, subscription content, and access keys' "$ROOT_DIR/install.sh"
 grep -q 'quiet_root_retry "subscription HTTPS protocol health-check" 12 1' "$ROOT_DIR/install.sh"
 grep -q 'settings subscription-url off' "$ROOT_DIR/install.sh"
 grep -q 'disable --now xraydo-subscription.service' "$ROOT_DIR/install.sh"

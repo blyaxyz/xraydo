@@ -1,37 +1,39 @@
-# Матрица поддержки
+[English](./SUPPORT_MATRIX.md) | [Русский](./SUPPORT_MATRIX.ru.md)
 
-Источником истины для CI служит
-[`src/xraydo/data/support_matrix.json`](../src/xraydo/data/support_matrix.json).
-Workflow строит матрицу непосредственно из этого файла, поэтому документация и
-CI не могут незаметно разойтись.
+# Support matrix
 
-Поддерживаются только официальные серверные сборки Debian и Ubuntu с systemd:
+[`src/xraydo/data/support_matrix.json`](../src/xraydo/data/support_matrix.json)
+is the source of truth for CI. The workflow builds its matrix directly from
+this file, preventing the documentation and CI configuration from silently
+diverging.
 
-- Ubuntu Server 26.10 — текущий interim-релиз, поддержка до июля 2027 года;
-- Ubuntu Server 26.04 LTS — стандартная поддержка до мая 2031 года;
-- Ubuntu Server 24.04 LTS — стандартная поддержка до мая 2029 года;
-- Ubuntu Server 22.04 LTS — стандартная поддержка до мая 2027 года;
-- Debian 13 — текущий stable, LTS до 30 июня 2030 года;
-- Debian 12 — текущий Debian LTS, поддержка до 30 июня 2028 года.
+Only official Debian and Ubuntu Server releases with systemd are supported:
 
-AlmaLinux, Rocky Linux, Alpine, openSUSE, производные Debian/Ubuntu и системы без
-systemd больше не входят в поддерживаемую матрицу. Установщик завершает работу до
-изменения системы, если `ID` или `VERSION_ID` не совпадает с матрицей.
+- Ubuntu Server 26.10 — current interim release, supported until July 2027;
+- Ubuntu Server 26.04 LTS — standard support until May 2031;
+- Ubuntu Server 24.04 LTS — standard support until May 2029;
+- Ubuntu Server 22.04 LTS — standard support until May 2027;
+- Debian 13 — current stable release, LTS until June 30, 2030;
+- Debian 12 — current Debian LTS release, supported until June 30, 2028.
 
-Каждый вариант проверяется на `linux/amd64` и `linux/arm64`. Compatibility job
-проверяет идентичность системы, доступность штатного Python, синтаксис
-установщика, dry-run и запуск CLI. Полный набор unit-тестов выполняется отдельно
-на минимальном и актуальном Python, а installer-тесты — один раз. ARM64
-выполняется через QEMU; для AMD64 QEMU не запускается.
+AlmaLinux, Rocky Linux, Alpine, openSUSE, Debian/Ubuntu derivatives, and
+systems without systemd are outside the supported matrix. The installer exits
+before changing the system when `ID` or `VERSION_ID` does not match the matrix.
 
-Контейнерная проверка не подтверждает взаимодействие с systemd, reboot,
-SELinux, AppArmor или реальным firewall. Такие проверки требуют отдельной VM и
-остаются release-gate до объявления production-ready.
+Every platform is tested on `linux/amd64` and `linux/arm64`. The compatibility
+job verifies the operating-system identity, availability of the distribution's
+Python, installer syntax, dry-run behavior, and CLI startup. The full unit-test
+suite runs separately on the minimum and current Python versions, while the
+installer tests run once. ARM64 uses QEMU; AMD64 does not start QEMU.
 
-Матрица пересматривается после каждого выпуска Debian stable и Ubuntu release.
-Версия удаляется после окончания обычной поддержки/LTS; платные Ubuntu Pro/ESM
-и Debian ELTS не расширяют матрицу проекта.
+Container checks do not verify integration with systemd, reboot behavior,
+SELinux, AppArmor, or a real firewall. Those checks require a dedicated VM and
+remain a release gate until the project is declared production-ready.
 
-Сроки сверяются с официальными страницами
-[Ubuntu release cycle](https://ubuntu.com/about/release-cycle) и
-[Debian Releases](https://www.debian.org/releases/).
+The matrix is reviewed after every Debian stable and Ubuntu release. A version
+is removed after regular support or LTS ends. Paid Ubuntu Pro/ESM and Debian
+ELTS coverage do not extend the project's support matrix.
+
+Dates are checked against the official
+[Ubuntu release cycle](https://ubuntu.com/about/release-cycle) and
+[Debian Releases](https://www.debian.org/releases/) pages.

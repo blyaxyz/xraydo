@@ -16,7 +16,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
         exit 2
     fi
 
-    echo "Installing Bash / Установка Bash..."
+    echo "Installing Bash..."
     if command -v apt-get >/dev/null 2>&1; then
         $BOOTSTRAP_ROOT apt-get update
         $BOOTSTRAP_ROOT apt-get install -y --no-install-recommends bash
@@ -271,10 +271,10 @@ if [[ -z "$LANGUAGE" ]]; then
         LANGUAGE="en"
     else
         printf '%s\n' \
-            'Select language / Выберите язык:' '' \
+            'Select interface language:' '' \
             '  1) English (default)' \
             '  2) Русский' ''
-        read -r -p 'Choice / Выбор [1]: ' language_choice
+        read -r -p 'Choice [1]: ' language_choice
         [[ "$language_choice" == "2" ]] && LANGUAGE="ru" || LANGUAGE="en"
     fi
 fi
@@ -358,19 +358,36 @@ remove_xraydo() {
     local purge=false
     [[ "$action" == "purge" ]] && purge=true
 
-    printf '\nRemoval plan / План удаления:\n'
-    printf '  action / действие: %s\n  prefix: %s\n' "$action" "$PREFIX"
-    printf '  programs: %s/bin/{xraydo,xray,hysteria,telemt}, %s/lib/xraydo\n' "$PREFIX" "$PREFIX"
-    printf '  services: xraydo-*\n'
-    printf '  system packages / системные пакеты: preserved (they may be shared)\n'
-    if [[ "$purge" == true ]]; then
-        printf '  PERMANENTLY DELETE / УДАЛИТЬ БЕЗВОЗВРАТНО:\n'
-        printf '    config: %s/etc/xraydo\n    state, users, TLS/private keys: %s\n' "$PREFIX" "$data_dir"
-        [[ "$PREFIX" == "/usr/local" ]] && printf '    logs: /var/log/xraydo; system users: xraydo-*\n'
-        expected="PURGE xraydo"
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        printf '\nПлан удаления:\n'
+        printf '  действие: %s\n  путь установки: %s\n' "$action" "$PREFIX"
+        printf '  программы: %s/bin/{xraydo,xray,hysteria,telemt}, %s/lib/xraydo\n' "$PREFIX" "$PREFIX"
+        printf '  службы: xraydo-*\n'
+        printf '  системные пакеты: сохраняются, поскольку могут использоваться другими программами\n'
+        if [[ "$purge" == true ]]; then
+            printf '  БЕЗВОЗВРАТНО УДАЛИТЬ:\n'
+            printf '    конфигурация: %s/etc/xraydo\n    state, пользователи, TLS и приватные ключи: %s\n' "$PREFIX" "$data_dir"
+            [[ "$PREFIX" == "/usr/local" ]] && printf '    журналы: /var/log/xraydo; системные пользователи: xraydo-*\n'
+            expected="PURGE xraydo"
+        else
+            printf '  сохранить: %s/etc/xraydo и %s\n' "$PREFIX" "$data_dir"
+            expected="UNINSTALL xraydo"
+        fi
     else
-        printf '  preserve / сохранить: %s/etc/xraydo and %s\n' "$PREFIX" "$data_dir"
-        expected="UNINSTALL xraydo"
+        printf '\nRemoval plan:\n'
+        printf '  action: %s\n  installation prefix: %s\n' "$action" "$PREFIX"
+        printf '  programs: %s/bin/{xraydo,xray,hysteria,telemt}, %s/lib/xraydo\n' "$PREFIX" "$PREFIX"
+        printf '  services: xraydo-*\n'
+        printf '  system packages: preserved because they may be shared\n'
+        if [[ "$purge" == true ]]; then
+            printf '  PERMANENTLY DELETE:\n'
+            printf '    configuration: %s/etc/xraydo\n    state, users, TLS, and private keys: %s\n' "$PREFIX" "$data_dir"
+            [[ "$PREFIX" == "/usr/local" ]] && printf '    logs: /var/log/xraydo; system users: xraydo-*\n'
+            expected="PURGE xraydo"
+        else
+            printf '  preserve: %s/etc/xraydo and %s\n' "$PREFIX" "$data_dir"
+            expected="UNINSTALL xraydo"
+        fi
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -379,7 +396,11 @@ remove_xraydo() {
     fi
     if [[ "$ASSUME_YES" != true ]]; then
         [[ "$NON_INTERACTIVE" != true && -t 0 ]] || fail "use --yes with --$action in non-interactive mode"
-        read -r -p "Type '$expected' to continue / Введите '$expected': " confirmation
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            read -r -p "Введите '$expected' для продолжения: " confirmation
+        else
+            read -r -p "Type '$expected' to continue: " confirmation
+        fi
         [[ "$confirmation" == "$expected" ]] || fail "removal confirmation did not match"
     fi
 
@@ -417,7 +438,10 @@ if [[ -z "$INSTALL_ACTION" ]]; then
             1) INSTALL_ACTION="install" ;;
             2) INSTALL_ACTION="uninstall" ;;
             3) INSTALL_ACTION="purge" ;;
-            q|Q) printf 'Cancelled / Отменено.\n'; exit 0 ;;
+            q|Q)
+                [[ "$LANGUAGE" == "ru" ]] && printf 'Отменено.\n' || printf 'Cancelled.\n'
+                exit 0
+                ;;
             *) fail "invalid action choice" ;;
         esac
     fi
@@ -474,7 +498,10 @@ if [[ -z "$PROFILE" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
         case "${profile_choice:-1}" in
             1) PROFILE="quick"; break ;;
             2) PROFILE="advanced"; break ;;
-            q|Q) printf '%s\n' "Cancelled / Отменено."; exit 0 ;;
+            q|Q)
+                [[ "$LANGUAGE" == "ru" ]] && printf 'Отменено.\n' || printf 'Cancelled.\n'
+                exit 0
+                ;;
         esac
     done
 fi
@@ -579,7 +606,11 @@ if [[ "$PROFILE" == "advanced" && "$ROLE" != "node" && "$TLS_MODE" != "private-c
         TLS_MODE="public-ip"
     fi
     if [[ -z "$ACME_EMAIL" ]]; then
-        read -r -p "Let's Encrypt email / Email Let's Encrypt (optional): " ACME_EMAIL
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            read -r -p "Email для Let's Encrypt (необязательно): " ACME_EMAIL
+        else
+            read -r -p "Let's Encrypt email (optional): " ACME_EMAIL
+        fi
     fi
 fi
 
@@ -593,8 +624,13 @@ fi
 
 if [[ "$PROFILE" == "advanced" && ",$CORES," == *,telemt,* && \
     "$NON_INTERACTIVE" != true && -t 0 ]]; then
-    read -r -p "Telemt port / Порт Telemt [$TELEMT_PORT]: " custom_telemt_port
-    read -r -p "Telemt TLS domain / TLS-домен Telemt [$TELEMT_TLS_DOMAIN]: " custom_telemt_domain
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        read -r -p "Порт Telemt [$TELEMT_PORT]: " custom_telemt_port
+        read -r -p "TLS-домен Telemt [$TELEMT_TLS_DOMAIN]: " custom_telemt_domain
+    else
+        read -r -p "Telemt port [$TELEMT_PORT]: " custom_telemt_port
+        read -r -p "Telemt TLS domain [$TELEMT_TLS_DOMAIN]: " custom_telemt_domain
+    fi
     TELEMT_PORT="${custom_telemt_port:-$TELEMT_PORT}"
     TELEMT_TLS_DOMAIN="${custom_telemt_domain:-$TELEMT_TLS_DOMAIN}"
     [[ "$TELEMT_PORT" =~ ^[0-9]+$ ]] && ((TELEMT_PORT >= 1 && TELEMT_PORT <= 65535)) || fail "invalid Telemt port"
@@ -632,23 +668,42 @@ if [[ -z "$FIRST_USER_MODE" ]]; then
 fi
 
 if [[ "$FIRST_USER_MODE" == "custom" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
-    read -r -p "First user name / Имя первого пользователя [default]: " custom_user_name
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        read -r -p "Имя первого пользователя [default]: " custom_user_name
+    else
+        read -r -p "First user name [default]: " custom_user_name
+    fi
     FIRST_USER_NAME="${custom_user_name:-default}"
     [[ "$FIRST_USER_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "invalid first user name"
-    printf '%s\n' \
-        'Limits / Лимиты:' \
-        '  1) Recommended: 30d, 100GB, 1 device, 2 IPs' \
-        '  2) Unlimited' \
-        '  3) Custom traffic, duration and IP count'
-    read -r -p 'Choice / Выбор [1]: ' limits_choice
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        printf '%s\n' \
+            'Лимиты:' \
+            '  1) Рекомендуемые: 30 дней, 100 GB, 1 устройство, 2 IP' \
+            '  2) Без ограничений' \
+            '  3) Настроить трафик, срок и число IP'
+        read -r -p 'Выбор [1]: ' limits_choice
+    else
+        printf '%s\n' \
+            'Limits:' \
+            '  1) Recommended: 30d, 100GB, 1 device, 2 IPs' \
+            '  2) Unlimited' \
+            '  3) Custom traffic, duration, and IP count'
+        read -r -p 'Choice [1]: ' limits_choice
+    fi
     case "${limits_choice:-1}" in
         1) FIRST_USER_LIMITS="recommended" ;;
         2) FIRST_USER_LIMITS="unlimited" ;;
         3)
             FIRST_USER_LIMITS="custom"
-            read -r -p 'Traffic / Трафик [100GB]: ' custom_traffic
-            read -r -p 'Duration / Срок [30d]: ' custom_duration
-            read -r -p 'IP limit / Лимит IP [2]: ' custom_ips
+            if [[ "$LANGUAGE" == "ru" ]]; then
+                read -r -p 'Трафик [100GB]: ' custom_traffic
+                read -r -p 'Срок [30d]: ' custom_duration
+                read -r -p 'Лимит IP [2]: ' custom_ips
+            else
+                read -r -p 'Traffic [100GB]: ' custom_traffic
+                read -r -p 'Duration [30d]: ' custom_duration
+                read -r -p 'IP limit [2]: ' custom_ips
+            fi
             FIRST_USER_TRAFFIC="${custom_traffic:-100GB}"
             FIRST_USER_DURATION="${custom_duration:-30d}"
             FIRST_USER_IPS="${custom_ips:-2}"
@@ -678,29 +733,78 @@ fi
 [[ "$UTLS_PROFILE" =~ ^(firefox|chrome|safari|ios|android|edge|360|qq|random|randomized|randomizednoalpn)$ ]] || fail "invalid uTLS profile"
 
 if [[ "$LANGUAGE" == "ru" ]]; then
-    PLAN_TITLE="План быстрой установки"
+    PLAN_TITLE="План установки"
     PLATFORM_LABEL="Система"
+    PROFILE_LABEL="Профиль"
+    ROLE_LABEL="Роль"
     PACKAGES_LABEL="Системные пакеты"
     SOURCE_LABEL="Исходный код"
     PREFIX_LABEL="Путь установки"
     CORES_LABEL="Ядра"
+    AUTOSTART_LABEL="Автозапуск ядер"
+    SECURITY_LABEL="Защита"
+    RAM_LABEL="Доступно RAM"
+    DISK_LABEL="Доступно диска"
+    FIRST_USER_LABEL="Первый пользователь"
+    LIMITS_LABEL="Лимиты"
+    FIREWALL_LABEL="Файрвол"
+    ENABLED_TEXT="включён"
+    UNCHANGED_TEXT="без изменений"
+    UNLIMITED_TEXT="без ограничений"
+    SKIPPED_USER_TEXT="пропущен — учётные данные и подписка не создаются"
     CONFIRM_TEXT="Скачать и установить? [Enter = да, q = отмена]: "
     CANCEL_TEXT="Установка отменена."
     DOWNLOAD_TEXT="Загрузка проверенного xraydo..."
     INSTALL_TEXT="Установка xraydo..."
     DONE_TEXT="xraydo установлен и готов к работе."
 else
-    PLAN_TITLE="Quick installation plan"
+    PLAN_TITLE="Installation plan"
     PLATFORM_LABEL="System"
+    PROFILE_LABEL="Profile"
+    ROLE_LABEL="Role"
     PACKAGES_LABEL="System packages"
     SOURCE_LABEL="Source"
     PREFIX_LABEL="Installation prefix"
     CORES_LABEL="Cores"
+    AUTOSTART_LABEL="Core autostart"
+    SECURITY_LABEL="Security"
+    RAM_LABEL="RAM available"
+    DISK_LABEL="Disk available"
+    FIRST_USER_LABEL="First user"
+    LIMITS_LABEL="Limits"
+    FIREWALL_LABEL="Firewall"
+    ENABLED_TEXT="enabled"
+    UNCHANGED_TEXT="unchanged"
+    UNLIMITED_TEXT="unlimited"
+    SKIPPED_USER_TEXT="skipped — no credentials or subscription"
     CONFIRM_TEXT="Download and install? [Enter = yes, q = cancel]: "
     CANCEL_TEXT="Installation cancelled."
     DOWNLOAD_TEXT="Downloading verified xraydo..."
     INSTALL_TEXT="Installing xraydo..."
     DONE_TEXT="xraydo is installed and ready."
+fi
+
+PROFILE_DISPLAY="$PROFILE"
+ROLE_DISPLAY="$ROLE"
+TLS_MODE_DISPLAY="$TLS_MODE"
+FIRST_USER_MODE_DISPLAY="$FIRST_USER_MODE"
+if [[ "$LANGUAGE" == "ru" ]]; then
+    case "$PROFILE" in
+        quick) PROFILE_DISPLAY="быстрая установка" ;;
+        advanced) PROFILE_DISPLAY="продвинутая установка" ;;
+    esac
+    [[ "$ROLE" == "standalone" ]] && ROLE_DISPLAY="автономный сервер"
+    case "$TLS_MODE" in
+        auto) TLS_MODE_DISPLAY="автоматически" ;;
+        domain) TLS_MODE_DISPLAY="публичный домен" ;;
+        public-ip) TLS_MODE_DISPLAY="публичный IP" ;;
+        private-ca) TLS_MODE_DISPLAY="частный CA" ;;
+    esac
+    case "$FIRST_USER_MODE" in
+        recommended) FIRST_USER_MODE_DISPLAY="рекомендуемый" ;;
+        custom) FIRST_USER_MODE_DISPLAY="настраиваемый" ;;
+        skip) FIRST_USER_MODE_DISPLAY="пропустить" ;;
+    esac
 fi
 
 declare -a REQUIRED_PACKAGES=()
@@ -873,8 +977,8 @@ telemt_api_port="$(next_free_port tcp 9091)"
 if [[ "$PROFILE" != "quick" || "$DRY_RUN" == true || "$TELEMT_ONLY" == true ]]; then
 printf '\n%s:\n' "$PLAN_TITLE"
 printf '  %s: %s %s / %s / %s\n' "$PLATFORM_LABEL" "$OS_ID" "$OS_VERSION" "$ARCH" "$PACKAGE_MANAGER"
-printf '  Profile / Профиль: %s\n' "$PROFILE"
-printf '  Role / Роль: %s\n' "$ROLE"
+printf '  %s: %s\n' "$PROFILE_LABEL" "$PROFILE_DISPLAY"
+printf '  %s: %s\n' "$ROLE_LABEL" "$ROLE_DISPLAY"
 printf '  %s: %s\n' "$PACKAGES_LABEL" "$packages_display"
 printf '  %s: %s @ %s\n' "$SOURCE_LABEL" "$XRAYDO_ARCHIVE_URL" "$XRAYDO_REF"
 printf '  SHA-256: %s\n' "$XRAYDO_ARCHIVE_SHA256"
@@ -883,39 +987,48 @@ printf '  %s: %s\n' "$CORES_LABEL" "$CORES"
 if [[ "$TELEMT_ONLY" == true ]]; then
     printf '  TLS: Telemt Fake TLS (%s)\n' "$TELEMT_TLS_DOMAIN"
 else
-    printf '  TLS: %s\n' "$TLS_MODE"
+    printf '  TLS: %s\n' "$TLS_MODE_DISPLAY"
     [[ "$TLS_MODE" != "private-ca" ]] && printf '    ACME email: %s\n' "${ACME_EMAIL:-not provided}"
 fi
 printf '  Init: %s\n' "$INIT_SYSTEM"
 if [[ "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
-    printf '  Core autostart / Автозапуск ядер: enabled (%s)\n' "$INIT_SYSTEM"
+    printf '  %s: %s (%s)\n' "$AUTOSTART_LABEL" "$ENABLED_TEXT" "$INIT_SYSTEM"
 fi
-printf '  Security / Защита: %s (unchanged)\n' "$security_modules"
-printf '  RAM available / Доступно RAM: %s MB\n' "$memory_mb"
-printf '  Disk available / Доступно диска: %s MB\n' "$disk_available_mb"
+printf '  %s: %s (%s)\n' "$SECURITY_LABEL" "$security_modules" "$UNCHANGED_TEXT"
+printf '  %s: %s MB\n' "$RAM_LABEL" "$memory_mb"
+printf '  %s: %s MB\n' "$DISK_LABEL" "$disk_available_mb"
 [[ ",$CORES," == *,xray,* ]] && printf '  Xray REALITY: TCP %s\n' "$xray_port"
 [[ ",$CORES," == *,xray,* ]] && printf '    REALITY target/SNI: %s\n' "$REALITY_TARGET"
 if [[ -n "$tcp_443_conflict" ]]; then
-    printf '    TCP 443 occupied / занят: %s; selected / выбран: TCP %s\n' "$tcp_443_conflict" "$xray_port"
+    if [[ "$LANGUAGE" == "ru" ]]; then
+        printf '    TCP 443 занят: %s; выбран порт TCP %s\n' "$tcp_443_conflict" "$xray_port"
+    else
+        printf '    TCP 443 is occupied by %s; selected TCP %s\n' "$tcp_443_conflict" "$xray_port"
+    fi
 fi
 [[ ",$CORES," == *,hysteria,* ]] && printf '  Hysteria 2: UDP %s\n' "$hysteria_port"
 [[ ",$CORES," == *,telemt,* ]] && printf '  Telemt: TCP %s; TLS domain: %s\n' "$telemt_port" "$TELEMT_TLS_DOMAIN"
 if [[ "$FIRST_USER_MODE" != "skip" ]]; then
-    printf '  First user / Первый пользователь: %s (%s)\n' "$FIRST_USER_NAME" "$FIRST_USER_MODE"
+    printf '  %s: %s (%s)\n' "$FIRST_USER_LABEL" "$FIRST_USER_NAME" "$FIRST_USER_MODE_DISPLAY"
     if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
-        printf '    Limits / Лимиты: unlimited\n'
+        printf '    %s: %s\n' "$LIMITS_LABEL" "$UNLIMITED_TEXT"
     else
-        printf '    Limits / Лимиты: duration=%s, traffic=%s, devices=1, IP=%s\n' \
-            "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            printf '    %s: срок=%s, трафик=%s, устройств=1, IP=%s\n' \
+                "$LIMITS_LABEL" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+        else
+            printf '    %s: duration=%s, traffic=%s, devices=1, IP=%s\n' \
+                "$LIMITS_LABEL" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+        fi
     fi
     [[ ",$CORES," == *,xray,* ]] && printf '    REALITY uTLS: %s\n' "$UTLS_PROFILE"
     [[ ",$CORES," == *,hysteria,* ]] && printf '    Hysteria ECH: %s\n' "$HYSTERIA_ECH"
     [[ "$TELEMT_ONLY" == true ]] || \
         printf '    HTTPS subscription: TCP %s (credentials generated after health-check)\n' "$subscription_port"
 else
-    printf '  First user / Первый пользователь: skipped (no credentials/subscription)\n'
+    printf '  %s: %s\n' "$FIRST_USER_LABEL" "$SKIPPED_USER_TEXT"
 fi
-printf '  Firewall / Файрвол: unchanged / без изменений\n'
+printf '  %s: %s\n' "$FIREWALL_LABEL" "$UNCHANGED_TEXT"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -1400,7 +1513,11 @@ detect_public_host() {
     [[ -n "$PUBLIC_HOST" ]] && return 0
     PUBLIC_HOST="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true)"
     if [[ -z "$PUBLIC_HOST" && "$PROFILE" == "advanced" && "$NON_INTERACTIVE" != true && -t 0 ]]; then
-        read -r -p 'Public DNS name or IP / Публичный DNS или IP: ' PUBLIC_HOST
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            read -r -p 'Публичное DNS-имя или IP: ' PUBLIC_HOST
+        else
+            read -r -p 'Public DNS name or IP: ' PUBLIC_HOST
+        fi
     fi
     [[ -n "$PUBLIC_HOST" ]] || fail "cannot detect public address; use --public-host"
     [[ "$PUBLIC_HOST" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || fail "invalid public host"
@@ -1673,7 +1790,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         credentials_file="$DATA_DIR/bootstrap-$FIRST_USER_NAME.txt"
         credentials_tmp="$TEMP_DIR/bootstrap.txt"
         (umask 077; {
-            printf 'Subscription: %s\n' "$subscription_url"
+            [[ "$LANGUAGE" == "ru" ]] && printf 'Подписка: %s\n' "$subscription_url" || printf 'Subscription: %s\n' "$subscription_url"
             [[ -z "$hysteria_link" ]] || printf 'Hysteria 2: %s\n' "$hysteria_link"
             [[ -z "$xray_link" ]] || printf 'Xray REALITY: %s\n' "$xray_link"
             [[ -z "$mtproto_link" ]] || printf 'Telegram Proxy: %s\n' "$mtproto_link"
@@ -1685,16 +1802,30 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
                 fail "first-user keys could not be rendered"
             chmod 0600 "$first_user_details"
             if [[ "$NON_INTERACTIVE" != true && -t 0 && -t 1 && -w /dev/tty ]]; then
-                {
-                    printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
-                    [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
-                    printf '\nBase user, subscription content and access keys:\n'
-                    cat "$first_user_details"
-                    printf '\nSubscription QR:\n'
-                } >/dev/tty
+                if [[ "$LANGUAGE" == "ru" ]]; then
+                    {
+                        printf '\nHTTPS-подписка (показывается один раз):\n%s\n' "$subscription_url"
+                        [[ -z "$mtproto_link" ]] || printf '\nСсылка MTProto:\n%s\n' "$mtproto_link"
+                        printf '\nБазовый пользователь, содержимое подписки и ключи доступа:\n'
+                        cat "$first_user_details"
+                        printf '\nQR-код подписки:\n'
+                    } >/dev/tty
+                else
+                    {
+                        printf '\nHTTPS subscription (shown once):\n%s\n' "$subscription_url"
+                        [[ -z "$mtproto_link" ]] || printf '\nMTProto link:\n%s\n' "$mtproto_link"
+                        printf '\nBase user, subscription content, and access keys:\n'
+                        cat "$first_user_details"
+                        printf '\nSubscription QR code:\n'
+                    } >/dev/tty
+                fi
                 root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
             else
-                printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
+                if [[ "$LANGUAGE" == "ru" ]]; then
+                    printf '  одноразовые учётные данные: %s (безопасно перенесите, затем удалите)\n' "$credentials_file"
+                else
+                    printf '  one-time credentials: %s (move securely, then delete)\n' "$credentials_file"
+                fi
             fi
         fi
     fi
@@ -1720,7 +1851,7 @@ if [[ "$TELEMT_ONLY" == true ]]; then
     (umask 077; {
         printf 'Telegram: %s\n' "$mtproto_link"
         printf 'Telegram HTTPS: %s\n' "$mtproto_https_link"
-        printf '\nBase user and access keys:\n'
+        [[ "$LANGUAGE" == "ru" ]] && printf '\nБазовый пользователь и ключи доступа:\n' || printf '\nBase user and access keys:\n'
         cat "$telemt_user_details"
     } >"$credentials_tmp")
     root_exec install -m 0600 "$credentials_tmp" "$credentials_file"
@@ -1781,20 +1912,46 @@ fi
 
 printf '\n%s\n' "$DONE_TEXT"
 printf '  xraydo: %s\n' "$BINARY_PATH"
-printf '  config: %s\n' "$CONFIG_PATH"
-printf '  state: %s\n' "$DATA_DIR"
-printf '  Xray: %s\n  Hysteria 2: %s\n  Telemt: %s\n' "$xray_state" "$hysteria_state" "$telemt_state"
-if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
-    printf '  core autostart: enabled via %s; services resume after reboot\n' "$INIT_SYSTEM"
-fi
-if [[ "$FIRST_USER_MODE" == "skip" ]]; then
-    printf '  first user: skipped; no credentials or subscription were created\n'
+if [[ "$LANGUAGE" == "ru" ]]; then
+    state_display() {
+        case "$1" in
+            "not selected") printf 'не выбрано' ;;
+            "configured and healthy") printf 'настроено и работает' ;;
+            "configured; service health failed") printf 'настроено; проверка службы не пройдена' ;;
+            "failed; endpoint not published") printf 'ошибка; endpoint не опубликован' ;;
+            *) printf '%s' "$1" ;;
+        esac
+    }
+    printf '  конфигурация: %s\n' "$CONFIG_PATH"
+    printf '  данные: %s\n' "$DATA_DIR"
+    printf '  Xray: %s\n  Hysteria 2: %s\n  Telemt: %s\n' \
+        "$(state_display "$xray_state")" "$(state_display "$hysteria_state")" "$(state_display "$telemt_state")"
+    if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
+        printf '  автозапуск ядер: включён через %s; службы запустятся после перезагрузки\n' "$INIT_SYSTEM"
+    fi
+    if [[ "$FIRST_USER_MODE" == "skip" ]]; then
+        printf '  первый пользователь: пропущен; учётные данные и подписка не созданы\n'
+    elif [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
+        printf '  первый пользователь: %s; без ограничений\n' "$FIRST_USER_NAME"
+    else
+        printf '  первый пользователь: %s; профиль=%s, срок=%s, трафик=%s, устройств=1, IP=%s\n' \
+            "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
+    fi
+    printf '  команда: sudo xraydo\n'
 else
-    if [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
+    printf '  config: %s\n' "$CONFIG_PATH"
+    printf '  state: %s\n' "$DATA_DIR"
+    printf '  Xray: %s\n  Hysteria 2: %s\n  Telemt: %s\n' "$xray_state" "$hysteria_state" "$telemt_state"
+    if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" && "$CORES" != "none" ]]; then
+        printf '  core autostart: enabled via %s; services resume after reboot\n' "$INIT_SYSTEM"
+    fi
+    if [[ "$FIRST_USER_MODE" == "skip" ]]; then
+        printf '  first user: skipped; no credentials or subscription were created\n'
+    elif [[ "$FIRST_USER_LIMITS" == "unlimited" ]]; then
         printf '  first user: %s; limits=unlimited\n' "$FIRST_USER_NAME"
     else
         printf '  first user: %s; limits=%s, duration=%s, traffic=%s, devices=1, IP=%s\n' \
             "$FIRST_USER_NAME" "$FIRST_USER_LIMITS" "$FIRST_USER_DURATION" "$FIRST_USER_TRAFFIC" "$FIRST_USER_IPS"
     fi
+    printf '  command: sudo xraydo\n'
 fi
-printf '  command: sudo xraydo\n'

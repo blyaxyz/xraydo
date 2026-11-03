@@ -1,9 +1,12 @@
 import ast
 import json
+import os
+import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from xraydo.i18n import Translator
+from xraydo.i18n import Translator, requested_language
 
 
 class LocaleTests(unittest.TestCase):
@@ -22,6 +25,18 @@ class LocaleTests(unittest.TestCase):
         english = json.loads((locale_dir / "en.json").read_text(encoding="utf-8"))
         russian = json.loads((locale_dir / "ru.json").read_text(encoding="utf-8"))
         self.assertEqual(set(english), set(russian))
+
+    def test_english_is_default_and_contains_no_russian_text(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(requested_language(None), "en")
+
+        english = json.loads(
+            (self._locale_dir() / "en.json").read_text(encoding="utf-8")
+        )
+        cyrillic = re.compile(r"[А-Яа-яЁё]")
+        self.assertFalse(
+            {key: value for key, value in english.items() if cyrillic.search(value)}
+        )
 
     def test_locale_has_no_unknown_or_unused_keys(self) -> None:
         source_dir = self._locale_dir().parent

@@ -239,7 +239,7 @@ credentials должны оставаться доступными только 
 
 Порядок сообщения об уязвимостях описан в [SECURITY.md](SECURITY.md), а проверка
 подписей, SBOM и provenance релиза — в
-[docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
+[docs/SUPPLY_CHAIN.ru.md](docs/SUPPLY_CHAIN.ru.md).
 
 ## Разработка и тесты
 
@@ -250,6 +250,6 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 bash tests/test_install.sh
 ```
 
-- [Поддерживаемые версии Debian и Ubuntu](docs/SUPPORT_MATRIX.md)
+- [Поддерживаемые версии Debian и Ubuntu](docs/SUPPORT_MATRIX.ru.md)
 - [План работ и оставшиеся задачи](TODO.md)
 - [История изменений](CHANGELOG.md)

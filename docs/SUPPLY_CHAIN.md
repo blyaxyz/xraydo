@@ -1,16 +1,19 @@
-# Проверка релиза xraydo
+[English](./SUPPLY_CHAIN.md) | [Русский](./SUPPLY_CHAIN.ru.md)
 
-Каждый GitHub Release содержит `install.sh`, исходный архив, `SHA256SUMS`, SPDX
-SBOM и Sigstore bundle для каждого файла. GitHub также публикует подписанные
-provenance- и SBOM-attestations.
+# Verifying an xraydo release
 
-После загрузки файлов проверьте контрольные суммы:
+Every GitHub Release contains `install.sh`, a source archive, `SHA256SUMS`, an
+SPDX SBOM, and a Sigstore bundle for every file. GitHub also publishes signed
+provenance and SBOM attestations.
+
+Verify the checksums after downloading the release files:
 
 ```bash
 sha256sum --check SHA256SUMS
 ```
 
-Проверьте keyless-подпись с привязкой к этому репозиторию и release workflow:
+Verify the keyless signature and bind it to this repository and its release
+workflow:
 
 ```bash
 cosign verify-blob install.sh \
@@ -19,12 +22,12 @@ cosign verify-blob install.sh \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Проверьте GitHub provenance attestation:
+Verify the GitHub provenance attestations:
 
 ```bash
 gh attestation verify install.sh --repo blyaxyz/xraydo
 gh attestation verify xraydo-source.tar.gz --repo blyaxyz/xraydo
 ```
 
-SBOM имеет формат SPDX 2.3 (`xraydo.spdx.json`). Его собственная подпись
-проверяется так же через `xraydo.spdx.json.sigstore.json`.
+The SBOM uses SPDX 2.3 format (`xraydo.spdx.json`). Verify its signature in the
+same way with `xraydo.spdx.json.sigstore.json`.
