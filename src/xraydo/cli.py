@@ -553,6 +553,15 @@ def parser() -> argparse.ArgumentParser:
     inbound_probe.add_argument("--listen", default="0.0.0.0")
     inbound_probe.add_argument("--port", type=int, required=True)
     inbound_probe.add_argument("--transport", choices=("tcp", "udp"), default="tcp")
+    for action in ("set-port", "set-sni"):
+        command = inbound_commands.add_parser(action)
+        command.add_argument("inbound_id")
+        command.add_argument("value", type=int if action == "set-port" else str)
+        command.add_argument("--node")
+        command.add_argument("--apply", action="store_true")
+        command.add_argument("--yes", action="store_true")
+        command.add_argument("--config-path", type=Path)
+        command.add_argument("--xray-binary")
     inbound_rotate_plan = inbound_commands.add_parser("rotation-plan")
     inbound_rotate_plan.add_argument("inbound_id")
     inbound_rotate_plan.add_argument("--node")
@@ -2054,6 +2063,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             elif args.inbound_command == "probe-port":
                 result = inbounds.probe_port(node_id or "local", listen=args.listen,
                                              port=args.port, transport=args.transport)
+                emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
+            elif args.inbound_command in {"set-port", "set-sni"}:
+                if args.apply and not args.yes:
+                    raise ValueError("inbound_confirmation_required")
+                config_root = Path(os.environ.get("XRAYDO_CONFIG", "/etc/xraydo/config.json")).parent
+                binary = args.xray_binary or shutil.which("xray")
+                if args.apply and node_id in {None, "local"} and not binary:
+                    raise ValueError("xray_not_installed")
+                common = {"node_id": node_id, "apply": args.apply, "binary": binary,
+                          "config_path": args.config_path or config_root / "cores" / "xray" / "config.json"}
+                if args.inbound_command == "set-port":
+                    result = inbounds.change_port(args.inbound_id, args.value, **common)
+                else:
+                    result = inbounds.change_sni(args.inbound_id, args.value, **common)
                 emit(result, json.dumps(result, ensure_ascii=False, indent=2), args.json)
             elif args.inbound_command == "rotation-plan":
                 result = inbounds.rotation_plan(args.inbound_id, node_id=node_id)

@@ -91,6 +91,16 @@ quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non
 [[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$quick_output" == *'"profile":"quick"'* ]]
 
+quick_flag_output="$("$ROOT_DIR/install.sh" --quick --lang ru --dry-run)"
+[[ "$quick_flag_output" == *'Профиль: быстрая установка'* ]]
+[[ "$quick_flag_output" == *'"profile":"quick"'* ]]
+[[ "$quick_flag_output" == *'"role":"standalone"'* ]]
+[[ "$quick_flag_output" == *'"cores":"xray,hysteria,telemt"'* ]]
+if "$ROOT_DIR/install.sh" --quick --profile advanced --dry-run >/dev/null 2>&1; then
+    printf '%s\n' '--quick accepted a conflicting advanced profile' >&2
+    exit 1
+fi
+
 quick_en_output="$("$ROOT_DIR/install.sh" --profile quick --lang en --dry-run --non-interactive)"
 [[ "$quick_en_output" == *'Cores: xray,hysteria,telemt'* ]]
 if printf '%s' "$quick_en_output" | grep -q '[А-Яа-яЁё]'; then
@@ -151,6 +161,7 @@ grep -q 'core hysteria' "$ROOT_DIR/install.sh"
 grep -q 'core telemt' "$ROOT_DIR/install.sh"
 grep -q -- '--tls-domain "\$TELEMT_TLS_DOMAIN"' "$ROOT_DIR/install.sh"
 grep -q -- '--telemt-only' "$ROOT_DIR/install.sh"
+grep -q -- '--quick' "$ROOT_DIR/install.sh"
 grep -q 'Продвинутая установка — ручной выбор роли, ядер, TLS и пользователя' "$ROOT_DIR/install.sh"
 grep -q 'if \[\[ "$PROFILE" == "quick" \]\]; then' "$ROOT_DIR/install.sh"
 grep -q 'ASSUME_YES=true' "$ROOT_DIR/install.sh"

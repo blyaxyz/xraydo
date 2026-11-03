@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import socket
 import secrets
@@ -363,7 +364,7 @@ class InboundService:
         return result
 
     def probe_port(self, node_id: str, *, listen: str, port: int,
-                   transport: str = "tcp") -> dict[str, Any]:
+                   transport: str = "tcp", current_id: Optional[str] = None) -> dict[str, Any]:
         if transport not in {"tcp", "udp"} or not 1 <= port <= 65535:
             raise InboundError("inbound_invalid_port_probe")
         data = self.store.load()
@@ -374,6 +375,7 @@ class InboundService:
 
         conflicts = [item for item in data.get("inbounds", [])
                      if item["node_id"] == node_id and item.get("state") != "deleted"
+                     and item["id"] != current_id
                      and address_conflicts(item["config"].get("listen", "0.0.0.0"))
                      and item["config"].get("port") == port
                      and ((item["config"].get("streamSettings", {}).get("network")
@@ -400,6 +402,109 @@ class InboundService:
                     "transport": transport, "state": "external_process"}
         return {"node_id": node_id, "listen": listen, "port": port,
                 "transport": transport, "state": "available"}
+
+    def change_port(self, inbound_id: str, port: int, *, node_id: Optional[str] = None,
+                    apply: bool = False, binary: Optional[str] = None,
+                    config_path: Optional[Path] = None) -> dict[str, Any]:
+        item = self.find(inbound_id, node_id)
+        if not 1 <= port <= 65535:
+            raise InboundError("inbound_invalid_port")
+        if item["config"].get("port") == port:
+            return {"state": "unchanged", "inbound_id": item["id"],
+                    "node_id": item["node_id"], "port": port}
+        config = copy.deepcopy(item["config"])
+        config["port"] = port
+        network = config.get("streamSettings", {}).get("network", "tcp")
+        transport = "udp" if network in {"kcp", "quic"} else "tcp"
+        if not apply:
+            return self.edit(item["id"], config, node_id=item["node_id"],
+                             expected_revision=item["revision"])
+        probe = self.probe_port(item["node_id"], listen=config.get("listen", "0.0.0.0"),
+                                port=port, transport=transport, current_id=item["id"])
+        if probe["state"] in {"managed_conflict", "external_process"}:
+            raise InboundError("inbound_port_unavailable")
+        if item["node_id"] != "local":
+            data = self.store.load()
+            operation = enqueue_node_operation(data, item["node_id"], "inbound", "edit", {
+                "inbound_id": item["id"], "expected_revision": item["revision"],
+                "config": config, "client_settings": item.get("client_settings", {}),
+                "apply_time_validation": True, "health_required": True,
+                "rollback_on_failure": True,
+            }, resource_id=item["id"])
+            operation["depends_on"] = probe["operation_id"]
+            self.store.save(data)
+            return {"state": "pending_node_execution", "operation_id": operation["id"],
+                    "probe_operation_id": probe["operation_id"], "port": port,
+                    "node_id": item["node_id"], "inbound_id": item["id"]}
+        return self.edit(item["id"], config, node_id=item["node_id"],
+                         expected_revision=item["revision"], apply=True,
+                         binary=binary, config_path=config_path)
+
+    def change_sni(self, inbound_id: str, sni: str, *, node_id: Optional[str] = None,
+                   apply: bool = False, binary: Optional[str] = None,
+                   config_path: Optional[Path] = None) -> dict[str, Any]:
+        item = self.find(inbound_id, node_id)
+        try:
+            normalized = sni.strip().rstrip(".").encode("idna").decode().lower()
+        except UnicodeError as error:
+            raise InboundError("inbound_invalid_sni") from error
+        if (not normalized or len(normalized) > 253
+                or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                           for label in normalized.split("."))):
+            raise InboundError("inbound_invalid_sni")
+        config = copy.deepcopy(item["config"])
+        stream = config.get("streamSettings", {})
+        security = stream.get("security")
+        current_sni = ((stream.get("realitySettings", {}).get("serverNames") or [None])[0]
+                       if security == "reality" else stream.get("tlsSettings", {}).get("serverName"))
+        if current_sni == normalized and item.get("client_settings", {}).get("sni") == normalized:
+            return {"state": "unchanged", "inbound_id": item["id"],
+                    "node_id": item["node_id"], "sni": normalized}
+        if security == "reality":
+            stream["realitySettings"]["serverNames"] = [normalized]
+        elif security == "tls":
+            tls = stream.setdefault("tlsSettings", {})
+            tls["serverName"] = normalized
+            if item["node_id"] == "local" and apply:
+                for certificate in tls.get("certificates", []):
+                    try:
+                        tls_context(Path(certificate["certificateFile"]),
+                                    Path(certificate["keyFile"]), normalized)
+                    except (KeyError, ValueError) as error:
+                        raise InboundError("inbound_certificate_san_mismatch") from error
+        else:
+            raise InboundError("inbound_sni_unsupported")
+        client_settings = copy.deepcopy(item.get("client_settings", {}))
+        client_settings["sni"] = normalized
+        if not apply:
+            planned = self.edit(item["id"], config, node_id=item["node_id"],
+                                expected_revision=item["revision"])
+            planned["sni"] = normalized
+            return planned
+        if item["node_id"] != "local":
+            data = self.store.load()
+            operation = enqueue_node_operation(data, item["node_id"], "inbound", "edit", {
+                "inbound_id": item["id"], "expected_revision": item["revision"],
+                "config": config, "client_settings": client_settings,
+                "validate_san": normalized if security == "tls" else None,
+                "apply_time_validation": True, "health_required": True,
+                "rollback_on_failure": True,
+            }, resource_id=item["id"])
+            self.store.save(data)
+            return {"state": "pending_node_execution", "operation_id": operation["id"],
+                    "sni": normalized, "node_id": item["node_id"],
+                    "inbound_id": item["id"]}
+        result = self.edit(item["id"], config, node_id=item["node_id"],
+                           expected_revision=item["revision"], apply=True,
+                           binary=binary, config_path=config_path)
+        data = self.store.load()
+        stored = next(value for value in data["inbounds"]
+                      if value["id"] == item["id"] and value["node_id"] == item["node_id"])
+        stored["client_settings"] = client_settings
+        self._update_subscriptions(data, stored)
+        self.store.save(data)
+        result["sni"] = normalized
+        return result
 
     def rotation_plan(self, inbound_id: str, *, node_id: Optional[str] = None) -> dict[str, Any]:
         item = self.find(inbound_id, node_id)
@@ -717,18 +822,34 @@ class InboundService:
                 if endpoint.get("inbound_id") == item["id"] and endpoint.get("node_id", "local") == item["node_id"]:
                     endpoint["inbound_revision"] = item["revision"]
                     endpoint["enabled"] = item["state"] == "enabled"
+                    public_port = item.get("config", {}).get("port")
+                    uri = endpoint.get("uri")
+                    if isinstance(public_port, int):
+                        endpoint["port"] = public_port
+                        if isinstance(uri, str):
+                            parsed_port = urllib.parse.urlsplit(uri)
+                            if parsed_port.hostname:
+                                credentials = (parsed_port.netloc.rsplit("@", 1)[0] + "@"
+                                               if "@" in parsed_port.netloc else "")
+                                host = (f"[{parsed_port.hostname}]" if ":" in parsed_port.hostname
+                                        else parsed_port.hostname)
+                                uri = urllib.parse.urlunsplit(
+                                    parsed_port._replace(netloc=f"{credentials}{host}:{public_port}"))
+                                endpoint["uri"] = uri
                     fingerprint = item.get("client_settings", {}).get("fingerprint")
                     spider_x = item.get("client_settings", {}).get("spider_x")
+                    client_sni = item.get("client_settings", {}).get("sni")
                     short_ids = item.get("config", {}).get("streamSettings", {}).get(
                         "realitySettings", {}).get("shortIds", [])
-                    if fingerprint or spider_x or short_ids:
+                    if fingerprint or spider_x or short_ids or client_sni:
                         endpoint["fingerprint"] = fingerprint
                         uri = endpoint.get("uri")
                         if isinstance(uri, str):
                             parsed = urllib.parse.urlsplit(uri)
                             query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
                             replacements = {"fp": fingerprint, "spx": spider_x,
-                                            "sid": short_ids[0] if short_ids else None}
+                                            "sid": short_ids[0] if short_ids else None,
+                                            "sni": client_sni}
                             query = [(name, replacements.get(name) or value) for name, value in query]
                             if fingerprint and not any(name == "fp" for name, _value in query):
                                 query.append(("fp", fingerprint))
@@ -736,6 +857,8 @@ class InboundService:
                                 query.append(("spx", spider_x))
                             if short_ids and not any(name == "sid" for name, _value in query):
                                 query.append(("sid", short_ids[0]))
+                            if client_sni and not any(name == "sni" for name, _value in query):
+                                query.append(("sni", client_sni))
                             endpoint["uri"] = urllib.parse.urlunsplit(
                                 parsed._replace(query=urllib.parse.urlencode(query))
                             )

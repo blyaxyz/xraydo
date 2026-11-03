@@ -29,6 +29,13 @@ curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/in
 sudo bash ./install.sh
 ```
 
+Чтобы полностью пропустить выбор языка и профиля и сразу начать автоматическую
+быструю установку:
+
+```bash
+sudo bash ./install.sh --quick
+```
+
 Или используйте `wget`:
 
 ```bash
@@ -43,7 +50,7 @@ sudo bash ./install.sh
 
 | Режим | Выбор или команда | Для чего подходит |
 |---|---|---|
-| Быстрая установка | `quick` | Один сервер с полностью автоматической настройкой |
+| Быстрая установка | `--quick` | Сразу запустить автоматическую установку без квиза |
 | Продвинутая установка | `advanced` | Свои роли, ядра, TLS, порты и лимиты |
 | Только Telegram Proxy | `--telemt-only` | Серверу нужен только Telemt/MTProxy |
 
@@ -84,6 +91,19 @@ sudo xraydo                 # открыть интерактивное меню
 sudo xraydo status          # проверить компоненты и протоколы
 sudo xraydo system status   # проверить установку
 xraydo --help               # показать все команды CLI
+```
+
+В разделе меню **Inbound и REALITY** доступны быстрые действия для смены порта
+и SNI. Смена порта работает для всех управляемых Xray inbound, включая SOCKS и
+HTTP proxy; смена SNI — для TLS и REALITY. На удалённой ноде порт сначала
+проверяется аутентифицированным агентом, а конфигурация и ссылки подписки
+обновляются только после успешного health/ACK.
+
+Те же действия доступны напрямую:
+
+```bash
+sudo xraydo inbound set-port INBOUND_ID 8443 --apply --yes
+sudo xraydo inbound set-sni INBOUND_ID cdn.example.com --apply --yes
 ```
 
 Интерактивное меню покрывает те же повседневные задачи, что и CLI:

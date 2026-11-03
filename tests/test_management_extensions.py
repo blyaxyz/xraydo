@@ -113,6 +113,51 @@ class ManagementExtensionTests(unittest.TestCase):
         self.assertEqual(operation["payload"]["core"], "xray")
         self.assertTrue(operation["payload"]["verify_sha256"])
 
+    def test_remote_quick_port_change_waits_for_probe_and_sni_waits_for_ack(self) -> None:
+        user, _token = UserService(self.store).create("alice")
+        key = AccessKeyService(self.store).default_for_user(user["id"])
+        node = NodeService(self.store).create("edge")
+        config = {"listen": "0.0.0.0", "port": 443, "protocol": "vless", "tag": "r",
+            "settings": {"clients": []}, "streamSettings": {"network": "tcp",
+            "security": "reality", "realitySettings": {"target": "example.com:443",
+            "serverNames": ["example.com"], "privateKey": "secret", "shortIds": ["0011"]}}}
+        inbound = InboundService(self.store).register(node["id"], config)
+        AccessKeyService(self.store).set_endpoint(key["id"], "xray_reality", {
+            "uri": "vless://id@edge:443?security=reality&sni=example.com",
+            "inbound_id": inbound["id"], "node_id": node["id"],
+        })
+        service = InboundService(self.store)
+        changed = service.change_port(inbound["id"], 8443, node_id=node["id"], apply=True)
+        operations = self.store.load()["node_operations"]
+        probe = next(item for item in operations if item["id"] == changed["probe_operation_id"])
+        edit = next(item for item in operations if item["id"] == changed["operation_id"])
+        self.assertEqual(probe["resource_type"], "port_probe")
+        self.assertEqual(edit["depends_on"], probe["id"])
+
+        queue = SyncQueueService(self.store)
+        probe_delivery = queue.claim(node["id"], supported_types={"port_probe"})[0]
+        queue.finish(probe_delivery["id"], node_id=node["id"],
+                     lease_id=probe_delivery["lease_id"],
+                     result={"state": "available", "transport": "tcp"})
+        port_delivery = queue.claim(node["id"], supported_types={"inbound"})[0]
+        queue.finish(port_delivery["id"], node_id=node["id"],
+                     lease_id=port_delivery["lease_id"],
+                     result={"health": "healthy", "atomic": True})
+        endpoint = AccessKeyService(self.store).find(key["id"])["endpoints"]["xray_reality"]
+        self.assertIn("edge:8443", endpoint["uri"])
+
+        changed_sni = service.change_sni(inbound["id"], "cdn.example",
+                                         node_id=node["id"], apply=True)
+        operation = queue.claim(node["id"], supported_types={"inbound"})[0]
+        self.assertEqual(operation["id"], changed_sni["operation_id"])
+        queue.finish(operation["id"], node_id=node["id"], lease_id=operation["lease_id"],
+                     result={"health": "healthy", "atomic": True})
+        current = service.find(inbound["id"], node["id"])
+        self.assertEqual(current["config"]["streamSettings"]["realitySettings"]["serverNames"],
+                         ["cdn.example"])
+        endpoint = AccessKeyService(self.store).find(key["id"])["endpoints"]["xray_reality"]
+        self.assertIn("sni=cdn.example", endpoint["uri"])
+
     @unittest.skipUnless(shutil.which("openssl"), "openssl is required")
     def test_node_certificate_key_is_delivered_only_to_assigned_node(self) -> None:
         first = NodeService(self.store).create("edge-a")

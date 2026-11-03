@@ -147,3 +147,19 @@ class InteractiveMenuTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("Помощь по меню", rendered)
         self.assertIn("h) Помощь", rendered)
+
+    def test_quick_port_and_sni_changes_are_available_in_inbound_menu(self) -> None:
+        result, commands, output = self.run_menu([
+            "4", "7", "inbound-a", "", "8443", "yes",
+            "8", "inbound-b", "edge-1", "cdn.example", "yes", "0", "0",
+        ])
+        self.assertEqual(result, 0)
+        self.assertEqual(commands, [
+            ["inbound", "list"],
+            ["inbound", "set-port", "inbound-a", "8443", "--apply", "--yes"],
+            ["inbound", "list"],
+            ["inbound", "set-sni", "inbound-b", "cdn.example", "--apply", "--yes",
+             "--node", "edge-1"],
+        ])
+        self.assertIn("Quickly change protocol/proxy port", output)
+        self.assertIn("Quickly change TLS/REALITY SNI", output)

@@ -20,6 +20,11 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Added
 
+- Added quick port and SNI switching to the interactive inbound menu and CLI.
+  Changes use port probes, atomic apply/rollback, health ACK gating, and delayed
+  subscription-link updates for local and remote Xray protocols and proxies.
+- Added the `install.sh --quick` shortcut, which selects the quick profile,
+  disables every installer prompt, accepts its plan, and starts installation immediately.
 - Node-scoped certificate issue/list/renew/replace/revoke/delete/assignment; private
   keys are queued only for the authenticated target node.
 - Unattended usage/IP collection, policy enforcement, desired-state reconciliation,

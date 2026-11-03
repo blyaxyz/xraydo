@@ -29,6 +29,13 @@ curl -fsSL https://raw.githubusercontent.com/blyaxyz/xraydo/refs/heads/master/in
 sudo bash ./install.sh
 ```
 
+To skip the language/profile quiz and start the fully automatic quick
+installation immediately:
+
+```bash
+sudo bash ./install.sh --quick
+```
+
 Or use `wget`:
 
 ```bash
@@ -43,7 +50,7 @@ and selected cores, creates systemd services, and opens the `xraydo` menu.
 
 | Mode | Select or run | Best for |
 |---|---|---|
-| Quick installation | `quick` | A single server with fully automatic setup |
+| Quick installation | `--quick` | Start a fully automatic setup without a quiz |
 | Advanced installation | `advanced` | Custom roles, cores, TLS, ports, and limits |
 | Telegram Proxy only | `--telemt-only` | A server that only needs Telemt/MTProxy |
 
@@ -184,6 +191,8 @@ sudo xraydo inbound wss-tls --node edge-1 --port 443 \
   --public-address vpn.example.com --sni vpn.example.com \
   --http-host cdn.example.com --cert /path/server.crt --key /path/server.key
 sudo xraydo inbound probe-port --node edge-1 --port 443 --transport tcp
+sudo xraydo inbound set-port INBOUND_ID 8443 --apply --yes
+sudo xraydo inbound set-sni INBOUND_ID cdn.example.com --apply --yes
 sudo xraydo automation run --once
 ```
 
@@ -191,6 +200,12 @@ The subscription HTTPS server applies per-address and per-token rate limits and
 temporarily bans repeated invalid-token attempts. REALITY rotations use
 `inbound rotation-plan` followed by `inbound rotation-apply`; subscription links
 change only after a healthy node ACK.
+
+The interactive **Inbounds and REALITY** menu also exposes quick port and SNI
+changes. Port switching applies to every managed Xray inbound, including SOCKS
+and HTTP proxies. SNI switching is available for TLS and REALITY inbounds. A
+remote port is probed by the authenticated agent first; configuration and
+subscription links are committed only after the target reports healthy.
 
 Use `--help` on any command group, for example `xraydo telemt --help`, to see
 all available actions.

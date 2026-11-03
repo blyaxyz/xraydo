@@ -429,6 +429,22 @@ def _inbounds_menu(runner: CommandRunner, translator: Translator) -> str:
         path = _required(translator, "menu.prompt.file")
         _execute(runner, translator, ["inbound", "import", "--file", path])
 
+    def quick_change(action: str) -> Callable[[], None]:
+        def run() -> None:
+            _execute(runner, translator, ["inbound", "list"])
+            inbound = _required(translator, "menu.prompt.inbound")
+            node = _read(translator.get("menu.prompt.node_optional"))
+            prompt = "menu.prompt.port" if action == "set-port" else "menu.prompt.sni"
+            value = _required(translator, prompt)
+            if not _confirm(translator):
+                print(translator.get("menu.cancelled"))
+                return
+            arguments = ["inbound", action, inbound, value, "--apply", "--yes"]
+            if node:
+                arguments.extend(["--node", node])
+            _execute(runner, translator, arguments)
+        return run
+
     return _submenu(
         translator,
         translator.get("menu.inbounds.title"),
@@ -447,6 +463,8 @@ def _inbounds_menu(runner: CommandRunner, translator: Translator) -> str:
                 translator.get("menu.reality.utls"),
                 lambda: _execute(runner, translator, ["reality", "utls"]),
             ),
+            ("7", translator.get("menu.inbounds.set_port"), quick_change("set-port")),
+            ("8", translator.get("menu.inbounds.set_sni"), quick_change("set-sni")),
         ),
     )
 

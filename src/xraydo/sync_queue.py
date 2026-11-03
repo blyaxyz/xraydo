@@ -347,6 +347,7 @@ class SyncQueueService:
                 short_ids = inbound.get("config", {}).get("streamSettings", {}).get(
                     "realitySettings", {}).get("shortIds", [])
                 spider_x = inbound.get("client_settings", {}).get("spider_x")
+                client_sni = inbound.get("client_settings", {}).get("sni")
                 for key in data.get("access_keys", []):
                     for endpoint in key.get("endpoints", {}).values():
                         if endpoint.get("inbound_id") != inbound["id"] or endpoint.get(
@@ -355,13 +356,28 @@ class SyncQueueService:
                         endpoint["inbound_revision"] = inbound["revision"]
                         endpoint["enabled"] = inbound["state"] == "enabled"
                         uri = endpoint.get("uri")
-                        if isinstance(uri, str) and (short_ids or spider_x):
+                        public_port = inbound.get("config", {}).get("port")
+                        if isinstance(public_port, int):
+                            endpoint["port"] = public_port
+                            if isinstance(uri, str):
+                                parsed_port = urllib.parse.urlsplit(uri)
+                                if parsed_port.hostname:
+                                    credentials = (parsed_port.netloc.rsplit("@", 1)[0] + "@"
+                                                   if "@" in parsed_port.netloc else "")
+                                    host = (f"[{parsed_port.hostname}]" if ":" in parsed_port.hostname
+                                            else parsed_port.hostname)
+                                    uri = urllib.parse.urlunsplit(parsed_port._replace(
+                                        netloc=f"{credentials}{host}:{public_port}"))
+                                    endpoint["uri"] = uri
+                        if isinstance(uri, str) and (short_ids or spider_x or client_sni):
                             parsed = urllib.parse.urlsplit(uri)
                             query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
                             replacements = {"sid": short_ids[0] if short_ids else None,
-                                            "spx": spider_x}
+                                            "spx": spider_x, "sni": client_sni}
                             query = [(name, replacements.get(name) or value)
                                      for name, value in query]
+                            if client_sni and not any(name == "sni" for name, _value in query):
+                                query.append(("sni", client_sni))
                             endpoint["uri"] = urllib.parse.urlunsplit(
                                 parsed._replace(query=urllib.parse.urlencode(query)))
                         key["updated_at"] = _now()

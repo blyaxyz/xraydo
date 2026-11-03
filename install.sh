@@ -73,6 +73,7 @@ TEMP_DIR=""
 SOURCE_DIR=""
 INSTALL_WITH_ROOT=false
 QUICK_UI=false
+QUICK_MODE=false
 
 usage() {
     cat <<'EOF'
@@ -85,6 +86,7 @@ Options:
   --lang en|ru          Installer and default xraydo language
   --prefix PATH         Installation prefix (default: /usr/local)
   --profile NAME        quick, master, node, or advanced
+  --quick               Install immediately with the quick profile; no quiz
   --role ROLE           standalone, master, or node
   --cores LIST          Comma list: xray,hysteria,telemt (default: all)
   --answers FILE        Read non-secret KEY=VALUE answers
@@ -174,6 +176,7 @@ while (($#)); do
             PROFILE="$2"
             shift 2
             ;;
+        --quick) QUICK_MODE=true; shift ;;
         --role)
             (($# >= 2)) || fail "--role requires standalone, master, or node"
             ROLE="$2"
@@ -238,6 +241,17 @@ while (($#)); do
         *) fail "unknown option: $1" ;;
     esac
 done
+
+if [[ "$QUICK_MODE" == true ]]; then
+    [[ -z "$PROFILE" || "$PROFILE" == "quick" ]] || fail "--quick conflicts with --profile $PROFILE"
+    [[ "$TELEMT_ONLY" != true ]] || fail "--quick conflicts with --telemt-only"
+    [[ -z "$INSTALL_ACTION" || "$INSTALL_ACTION" == "install" ]] || \
+        fail "--quick cannot be used with removal actions"
+    PROFILE="quick"
+    INSTALL_ACTION="install"
+    NON_INTERACTIVE=true
+    ASSUME_YES=true
+fi
 
 [[ -z "$LANGUAGE" || "$LANGUAGE" == "en" || "$LANGUAGE" == "ru" ]] || \
     fail "unsupported language: $LANGUAGE"

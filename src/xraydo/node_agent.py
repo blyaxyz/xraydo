@@ -211,12 +211,13 @@ class NodeAgent:
                 with socket.socket(family, kind) as probe:
                     probe.bind((listen, port))
             except OSError:
-                probe_result = "external_process"
+                raise ValueError("agent_port_unavailable")
             else:
                 probe_result = "available"
             result = {"operation_id": operation_id, "lease_id": lease_id,
-                      "status": "applied", "result": {"state": probe_result,
-                      "listen": listen, "port": port, "transport": transport}}
+                      "status": "applied",
+                      "result": {"state": probe_result, "listen": listen,
+                                 "port": port, "transport": transport}}
             state["applied_operations"][operation_id] = result
             _atomic_json(self.state_path, state)
             return result
