@@ -100,7 +100,7 @@ fi
 
 telemt_only_output="$("$ROOT_DIR/install.sh" --telemt-only --lang ru \
     --telemt-port 9443 --telemt-tls-domain vk.com --dry-run --non-interactive)"
-[[ "$telemt_only_output" == *'Cores / Ядра: telemt'* ]]
+[[ "$telemt_only_output" == *'Ядра: telemt'* ]]
 [[ "$telemt_only_output" == *'Telemt: TCP 9443; TLS domain: vk.com'* ]]
 [[ "$telemt_only_output" == *'TLS: Telemt Fake TLS (vk.com)'* ]]
 [[ "$telemt_only_output" == *'Первый пользователь: hello (recommended)'* ]]
