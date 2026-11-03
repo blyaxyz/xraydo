@@ -78,7 +78,7 @@ first_user_output="$("$ROOT_DIR/install.sh" --answers "$first_user_answers" --dr
 quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non-interactive)"
 [[ "$quick_output" == *'Profile / Профиль: quick'* ]]
 [[ "$quick_output" == *'Role / Роль: standalone'* ]]
-[[ "$quick_output" == *'Cores / Ядра: xray,hysteria,telemt'* ]]
+[[ "$quick_output" == *'Ядра: xray,hysteria,telemt'* ]]
 [[ "$quick_output" == *'TLS: public-ip'* ]]
 [[ "$quick_output" == *'Первый пользователь: default (recommended)'* ]]
 [[ "$quick_output" == *'Limits / Лимиты: unlimited'* ]]
@@ -86,6 +86,10 @@ quick_output="$("$ROOT_DIR/install.sh" --profile quick --lang ru --dry-run --non
 [[ "$quick_output" == *'REALITY target/SNI: ya.ru'* ]]
 [[ "$quick_output" == *'Telemt: TCP 8443; TLS domain: vk.com'* ]]
 [[ "$quick_output" == *'"profile":"quick"'* ]]
+
+quick_en_output="$("$ROOT_DIR/install.sh" --profile quick --lang en --dry-run --non-interactive)"
+[[ "$quick_en_output" == *'Cores: xray,hysteria,telemt'* ]]
+[[ "$quick_en_output" != *'Ядра:'* ]]
 
 printf 'ID=alpine\nVERSION_ID="3.21"\n' > "$TEMP_DIR/unsupported-os-release"
 if XRAYDO_OS_RELEASE="$TEMP_DIR/unsupported-os-release" \
