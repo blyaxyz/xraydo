@@ -7,11 +7,19 @@ must be called out explicitly under a `Breaking` subsection.
 
 ### Changed
 
+- Split the quick install's long 70% interval into certificate, user, per-core
+  configuration/health, subscription, and link-generation stages. Long-running
+  certificate and core health checks now refresh their labels with elapsed time
+  or retry counts on interactive terminals. Reinstalls reuse a matching TLS
+  certificate when its key matches and it remains valid for at least seven days.
 - Fixed the installer completion screen so it always prints a single, structured
   subscription/QR/Xray/Hysteria/Telegram result. Reinstalling rotates and displays
   the existing user's subscription token, and selected core failures now stop the
   installation instead of producing a misleading partial-success screen. Both
   Telegram Proxy URL formats are also stored in bootstrap credentials.
+- Fixed REALITY target discovery on Debian Python/OpenSSL builds that negotiate
+  X25519 through the TLS 1.3 system group policy but reject explicitly setting
+  `SSLContext.set_ecdh_curve("X25519")` with `UNKNOWN_GROUP`.
 - Reworked the README into a Russian-first, task-oriented guide and changed the
   bootstrap examples from a release asset to the current `master` installer,
   with both curl and wget commands.

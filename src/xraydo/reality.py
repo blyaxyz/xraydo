@@ -121,16 +121,28 @@ def _chain_metrics(connection: ssl.SSLSocket, leaf: bytes) -> tuple[int, int]:
     return len(chain), sum(sizes) if sizes else len(leaf)
 
 
+def _prefer_x25519(context: ssl.SSLContext) -> str:
+    """Prefer X25519 without rejecting OpenSSL builds that manage groups internally.
+
+    Some supported Debian OpenSSL/Python combinations negotiate X25519 by
+    default but reject ``SSLContext.set_ecdh_curve("X25519")`` with
+    ``UNKNOWN_GROUP``. In that case the TLS 1.3 system group policy remains the
+    portable and secure choice.
+    """
+    try:
+        context.set_ecdh_curve("X25519")
+    except (AttributeError, ValueError, ssl.SSLError):
+        return "system-default"
+    return "X25519"
+
+
 def _tls_probe(address: str, port: int, sni: Optional[str], timeout: float,
                xver: int, verify: bool) -> dict[str, Any]:
     context = ssl.create_default_context() if verify else ssl._create_unverified_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.maximum_version = ssl.TLSVersion.TLSv1_3
     context.set_alpn_protocols(["h2"])
-    try:
-        context.set_ecdh_curve("X25519")
-    except (AttributeError, ValueError, ssl.SSLError) as error:
-        raise RealityError("curve") from error
+    curve_policy = _prefer_x25519(context)
     started = time.monotonic()
     try:
         with socket.create_connection((address, port), timeout=timeout) as raw:
@@ -141,7 +153,7 @@ def _tls_probe(address: str, port: int, sni: Optional[str], timeout: float,
                 der = connection.getpeercert(binary_form=True)
                 count, size = _chain_metrics(connection, der)
                 return {"tls_version": connection.version(), "alpn": connection.selected_alpn_protocol(),
-                        "curve": "X25519", "chain_certificates": count, "chain_size_bytes": size,
+                        "curve": curve_policy, "chain_certificates": count, "chain_size_bytes": size,
                         "latency_ms": round((time.monotonic() - started) * 1000, 1),
                         **_decode_certificate(der)}
     except socket.timeout as error:
@@ -201,7 +213,7 @@ def scan_target(host: str, port: int = 443, timeout: float = MAX_TIMEOUT, *,
         raise RealityError("tls_version")
     if result.get("alpn") != "h2":
         raise RealityError("alpn")
-    if result.get("curve") != "X25519":
+    if result.get("curve") not in {"X25519", "system-default"}:
         raise RealityError("curve")
     sans = result.get("sans", [])
     if selected_sni not in _non_wildcard_sans(sans) and not any(

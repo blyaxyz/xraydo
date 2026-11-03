@@ -1164,6 +1164,32 @@ tar -xzf "$archive_path" -C "$TEMP_DIR"
 SOURCE_DIR="$TEMP_DIR/xraydo-$XRAYDO_REF"
 [[ -f "$SOURCE_DIR/src/xraydo/cli.py" ]] || fail "downloaded archive does not contain xraydo sources"
 
+# Backport the REALITY probe compatibility fix to the pinned source archive.
+# Debian's Python/OpenSSL can negotiate X25519 with its TLS 1.3 defaults while
+# rejecting SSLContext.set_ecdh_curve("X25519") with UNKNOWN_GROUP.
+reality_source="$SOURCE_DIR/src/xraydo/reality.py"
+python3 - "$reality_source" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+replacements = (
+    (
+        '''    try:\n        context.set_ecdh_curve("X25519")\n    except (AttributeError, ValueError, ssl.SSLError) as error:\n        raise RealityError("curve") from error\n''',
+        '''    try:\n        context.set_ecdh_curve("X25519")\n        curve_policy = "X25519"\n    except (AttributeError, ValueError, ssl.SSLError):\n        curve_policy = "system-default"\n''',
+    ),
+    ('"curve": "X25519",', '"curve": curve_policy,'),
+    ('if result.get("curve") != "X25519":',
+     'if result.get("curve") not in {"X25519", "system-default"}:'),
+)
+for old, new in replacements:
+    if old not in source:
+        raise SystemExit("pinned REALITY compatibility patch no longer applies")
+    source = source.replace(old, new, 1)
+path.write_text(source, encoding="utf-8")
+PY
+
 verify_checksum() {
     local file="$1"
     local expected="$2"
@@ -1511,7 +1537,20 @@ start_core_service() {
     root_exec systemctl restart "xraydo-$core.service" >/dev/null
     root_exec systemctl is-active --quiet "xraydo-$core.service" || return 1
     local attempt report="$TEMP_DIR/$core-protocol-health.json"
+    local progress_percent progress_label
+    case "$core" in
+        xray) progress_percent=84; progress_label="Xray" ;;
+        hysteria) progress_percent=89; progress_label="Hysteria 2" ;;
+        telemt) progress_percent=94; progress_label="Telemt" ;;
+    esac
     for attempt in {1..30}; do
+        if [[ "$QUICK_UI" == true && ( "$attempt" == 1 || $((attempt % 5)) == 0 ) ]]; then
+            if [[ "$LANGUAGE" == "ru" ]]; then
+                progress "$progress_percent" "Проверка $progress_label — попытка $attempt/30"
+            else
+                progress "$progress_percent" "Checking $progress_label — attempt $attempt/30"
+            fi
+        fi
         if root_exec env XRAYDO_CONFIG="$CONFIG_DIR/config.json" \
             "$BINARY_PATH" --json status >"$report" 2>/dev/null && \
             python3 -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(data["cores"][sys.argv[2]]["protocol"]["state"] != "healthy")' \
@@ -1547,6 +1586,36 @@ quiet_root() {
     fi
 }
 
+quiet_root_progress() {
+    local label="$1"
+    local percent="$2"
+    local display="$3"
+    shift 3
+    local diagnostics="$TEMP_DIR/diagnostics.log"
+    local command_pid elapsed=0
+
+    if [[ "$QUICK_UI" != true ]]; then
+        quiet_root "$label" "$@"
+        return
+    fi
+
+    progress "$percent" "$display"
+    root_exec "$@" >>"$diagnostics" 2>&1 &
+    command_pid=$!
+    while kill -0 "$command_pid" 2>/dev/null; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        if [[ -t 3 ]] && kill -0 "$command_pid" 2>/dev/null; then
+            progress "$percent" "$display (${elapsed}s)"
+        fi
+    done
+    if wait "$command_pid"; then
+        return 0
+    fi
+    printf 'Warning: %s failed; details: %s\n' "$label" "$diagnostics" >&2
+    return 1
+}
+
 quiet_root_retry() {
     local label="$1"
     local attempts="$2"
@@ -1571,6 +1640,11 @@ managed_leaf_matches_public_host() {
     local cert="$DATA_DIR/tls/leaf/current/server.crt"
     local key="$DATA_DIR/tls/leaf/current/server.key"
     [[ -s "$cert" && -s "$key" ]] || return 1
+    root_exec openssl x509 -in "$cert" -noout -checkend 604800 >/dev/null 2>&1 || return 1
+    local cert_public key_public
+    cert_public="$(root_exec openssl x509 -in "$cert" -pubkey -noout 2>/dev/null)" || return 1
+    key_public="$(root_exec openssl pkey -in "$key" -pubout 2>/dev/null)" || return 1
+    [[ -n "$cert_public" && "$cert_public" == "$key_public" ]] || return 1
     if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         root_exec openssl x509 -in "$cert" -noout -checkip "$PUBLIC_HOST" >/dev/null 2>&1
     else
@@ -1612,7 +1686,7 @@ if [[ "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
     fi
 fi
 if [[ "$QUICK_UI" == true ]]; then
-    [[ "$LANGUAGE" == "ru" ]] && progress 70 "Службы и автозапуск" || progress 70 "Services and autostart"
+    [[ "$LANGUAGE" == "ru" ]] && progress 65 "Службы и автозапуск" || progress 65 "Services and autostart"
 fi
 
 subscription_service_started=false
@@ -1634,8 +1708,17 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     [[ "$url_host" == *:* && "$url_host" != \[*\] ]] && url_host="[$url_host]"
     subscription_base="https://$url_host:$subscription_port"
 
+    if [[ "$QUICK_UI" == true && "$TELEMT_ONLY" != true ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 70 "Выпуск TLS-сертификата" || progress 70 "Issuing TLS certificate"
+    fi
+
     if [[ "$TELEMT_ONLY" == true ]]; then
         : # Telemt Fake TLS does not use an X.509 certificate.
+    elif managed_leaf_matches_public_host; then
+        if [[ "$QUICK_UI" == true ]]; then
+            [[ "$LANGUAGE" == "ru" ]] && progress 76 "Используется действующий TLS-сертификат" || \
+                progress 76 "Reusing valid TLS certificate"
+        fi
     elif [[ "$TLS_MODE" == "private-ca" ]]; then
         quiet_root "private CA initialization" "$BINARY_PATH" --json tls init-ca || fail "TLS CA initialization failed"
         if [[ "$PUBLIC_HOST" == *:* || "$PUBLIC_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1650,7 +1733,17 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             [[ -d /var/www/html ]] || fail "TCP port 80 is occupied by $(port_owner 80), and /var/www/html is unavailable for ACME webroot"
             acme_args+=(--webroot /var/www/html)
         fi
-        quiet_root "Let's Encrypt certificate" "$BINARY_PATH" --json tls acme-issue "${acme_args[@]}" || fail "Let's Encrypt certificate issuance failed"
+        if [[ "$LANGUAGE" == "ru" ]]; then
+            certificate_progress_label="Выпуск TLS-сертификата"
+        else
+            certificate_progress_label="Issuing TLS certificate"
+        fi
+        quiet_root_progress "Let's Encrypt certificate" 70 "$certificate_progress_label" \
+            "$BINARY_PATH" --json tls acme-issue "${acme_args[@]}" || \
+            fail "Let's Encrypt certificate issuance failed"
+    fi
+    if [[ "$QUICK_UI" == true && "$TELEMT_ONLY" != true ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 76 "TLS-сертификат готов" || progress 76 "TLS certificate ready"
     fi
     if [[ "$TELEMT_ONLY" != true ]]; then
         quiet_root "subscription URL setup" "$BINARY_PATH" --json settings subscription-url "$subscription_base" || fail "subscription URL setup failed"
@@ -1683,11 +1776,12 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
             --starts immediate --ips "$FIRST_USER_IPS" || fail "cannot apply first-user limits"
     fi
     if [[ "$QUICK_UI" == true ]]; then
-        [[ "$LANGUAGE" == "ru" ]] && progress 78 "Базовый пользователь" || progress 78 "Base user"
+        [[ "$LANGUAGE" == "ru" ]] && progress 80 "Пользователь и ключи" || progress 80 "User and access keys"
     fi
 
     if [[ ",$CORES," == *,xray,* ]]; then
-        if quiet_root "Xray REALITY validation" "$BINARY_PATH" --json core reality \
+        [[ "$LANGUAGE" == "ru" ]] && core_progress_label="Настройка Xray REALITY" || core_progress_label="Configuring Xray REALITY"
+        if quiet_root_progress "Xray REALITY validation" 82 "$core_progress_label" "$BINARY_PATH" --json core reality \
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --listen-port "$xray_port" \
             --target "$REALITY_TARGET" --sni "$REALITY_TARGET" \
             --fingerprint "$UTLS_PROFILE" --config "$CONFIG_DIR/cores/xray/config.json"; then
@@ -1704,6 +1798,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     fi
 
     if [[ ",$CORES," == *,hysteria,* ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 87 "Настройка Hysteria 2" || progress 87 "Configuring Hysteria 2"
         hysteria_cert="$CONFIG_DIR/cores/hysteria/pki/server.crt"
         hysteria_key="$CONFIG_DIR/cores/hysteria/pki/server.key"
         root_exec install -d -m 0750 "$CONFIG_DIR/cores/hysteria/pki"
@@ -1750,6 +1845,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     fi
 
     if [[ ",$CORES," == *,telemt,* ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 92 "Настройка Telegram Proxy" || progress 92 "Configuring Telegram Proxy"
         if quiet_root "Telemt configuration validation" "$BINARY_PATH" --json core telemt \
             --user "$FIRST_USER_NAME" --server "$PUBLIC_HOST" --port "$telemt_port" \
             --api-port "$telemt_api_port" --tls-domain "$TELEMT_TLS_DOMAIN" \
@@ -1766,7 +1862,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
         fi
     fi
     if [[ "$QUICK_UI" == true ]]; then
-        [[ "$LANGUAGE" == "ru" ]] && progress 90 "Проверка протоколов" || progress 90 "Checking protocols"
+        [[ "$LANGUAGE" == "ru" ]] && progress 95 "Все протоколы работают" || progress 95 "All protocols are healthy"
     fi
 
     if [[ "$TELEMT_ONLY" == true ]]; then
@@ -1780,6 +1876,9 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     fi
 
     if [[ "$TELEMT_ONLY" != true && "$PREFIX" == "/usr/local" && "$INIT_SYSTEM" != "none" ]]; then
+        if [[ "$QUICK_UI" == true ]]; then
+            [[ "$LANGUAGE" == "ru" ]] && progress 97 "HTTPS-подписка" || progress 97 "HTTPS subscription"
+        fi
         provision_subscription_service
         root_exec systemctl daemon-reload
         root_exec systemctl enable --now xraydo-subscription.service >/dev/null
@@ -1802,6 +1901,9 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
     # Collect every client link once after service health checks. A selected,
     # healthy core without a link is an incomplete installation, not an item
     # that may be silently omitted from the final screen.
+    if [[ "$QUICK_UI" == true ]]; then
+        [[ "$LANGUAGE" == "ru" ]] && progress 99 "Подготовка ссылок и QR-кода" || progress 99 "Preparing links and QR code"
+    fi
     if [[ "$xray_state" == "configured and healthy" || "$hysteria_state" == "configured and healthy" ]]; then
         subscription_json="$TEMP_DIR/subscription.json"
         root_exec "$BINARY_PATH" --json subscription show "$FIRST_USER_NAME" >"$subscription_json" || \
@@ -1882,7 +1984,7 @@ if [[ "$FIRST_USER_MODE" != "skip" ]]; then
                         printf 'SUBSCRIPTION\n%s\n\nSUBSCRIPTION QR CODE\n\n' "$subscription_url"
                     } >/dev/tty
                 fi
-                root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >/dev/tty
+                qrencode -t ANSIUTF8 "$subscription_url" >/dev/tty
                 if [[ "$LANGUAGE" == "ru" ]]; then
                     {
                         [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link"
@@ -1986,7 +2088,7 @@ if [[ "$QUICK_UI" == true ]]; then
         printf 'SUBSCRIPTION\n%s\n\n' "$subscription_url" >&3
         printf 'SUBSCRIPTION QR CODE\n\n' >&3
     fi
-    root_exec "$BINARY_PATH" subscription qr "$FIRST_USER_NAME" --token-file "$token_file" >&3
+    qrencode -t ANSIUTF8 "$subscription_url" >&3
     if [[ "$LANGUAGE" == "ru" ]]; then
         [[ -z "$xray_link" ]] || printf '\nXRAY REALITY\n%s\n' "$xray_link" >&3
         [[ -z "$hysteria_link" ]] || printf '\nHYSTERIA 2\n%s\n' "$hysteria_link" >&3

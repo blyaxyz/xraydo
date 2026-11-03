@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from xraydo.reality import (
     DEFAULT_REALITY_TARGET,
     MAX_CIDR_ADDRESSES,
     RealityError,
+    _prefer_x25519,
     _proxy_header,
     configure_reality,
     discover_targets,
@@ -43,6 +45,15 @@ class RealityTests(unittest.TestCase):
         )
         binary.chmod(0o755)
         return binary
+
+    def test_x25519_preference_falls_back_to_system_tls_group_policy(self) -> None:
+        context = mock.Mock()
+        context.set_ecdh_curve.side_effect = ssl.SSLError("UNKNOWN_GROUP")
+        self.assertEqual(_prefer_x25519(context), "system-default")
+
+        context.set_ecdh_curve.side_effect = None
+        self.assertEqual(_prefer_x25519(context), "X25519")
+        context.set_ecdh_curve.assert_called_with("X25519")
 
     def test_config_is_validated_and_private_key_is_not_returned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
